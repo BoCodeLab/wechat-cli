@@ -29,7 +29,8 @@ ENV/
 Thumbs.db
 
 # Project-specific
-.claude/
+.claude/*
+!.claude/skills/
 *.db
 *.db-wal
 *.db-shm
