@@ -5,10 +5,18 @@ import ctypes.wintypes as wt
 import functools
 import os
 import re
+import struct
 import subprocess
 import time
 
-from .common import collect_db_files, scan_memory_for_keys, cross_verify_keys, save_results
+from .common import (
+    KEY_SZ,
+    collect_db_files,
+    cross_verify_keys,
+    save_results,
+    scan_memory_for_keys,
+    verify_enc_key,
+)
 
 print = functools.partial(print, flush=True)
 
@@ -71,8 +79,210 @@ def _enum_regions(h):
     return regs
 
 
+# ============================================================
+# Windows 4.1.11+ 只读 Config.Cipher 扫描
+# 新版微信不再把密钥以 x'...' 字符串缓存在进程内存，而是存放在
+# com.Tencent.WCDB.Config.Cipher 对象中（XOR 混淆）。这里做只读运行时扫描。
+# ============================================================
+
+WINDOWS_CONFIG_CIPHER_NAME = b"com.Tencent.WCDB.Config.Cipher"
+WINDOWS_CONFIG_XOR_MASK = bytes.fromhex(
+    "d2c7442458020000004889442450488b"
+    "450048844c2448488944254048584c24"
+)
+WINDOWS_MAX_USER_ADDRESS = 0x0000_8000_0000_0000
+WINDOWS_CONFIG_BLOB_MAX = 1024
+WINDOWS_CONFIG_LITERAL_RE = re.compile(rb"[xX]'([0-9a-fA-F]{64,192})'")
+
+
+def _xor_repeat(data, mask):
+    return bytes(value ^ mask[index % len(mask)] for index, value in enumerate(data))
+
+
+def _u64_from(data, offset):
+    if offset < 0 or offset + 8 > len(data):
+        return 0
+    return struct.unpack_from("<Q", data, offset)[0]
+
+
+def _probable_32_byte_key(data):
+    return len(data) == KEY_SZ and len(set(data)) >= 15 and data not in {b"\x00" * KEY_SZ, b"\xff" * KEY_SZ}
+
+
+def _iter_windows_region_chunks(regions, read_region, chunk_size=2 * 1024 * 1024, overlap=0):
+    """按块读取可读内存区域，可携带 overlap 保证跨块匹配不被截断。"""
+    for base, size in regions:
+        offset = 0
+        tail = b""
+        tail_base = base
+        while offset < size:
+            current_size = min(chunk_size, size - offset)
+            chunk = read_region(base + offset, current_size) or b""
+            data_base = tail_base if tail else base + offset
+            data = tail + chunk
+            if data:
+                yield data_base, data
+                if overlap:
+                    tail = data[-overlap:]
+                    tail_base = data_base + max(0, len(data) - len(tail))
+                else:
+                    tail = b""
+                    tail_base = base + offset + current_size
+            else:
+                tail = b""
+                tail_base = base + offset + current_size
+            offset += current_size
+
+
+def _find_bytes_in_regions(regions, read_region, needle):
+    """在可读内存区域中查找 needle，返回所有命中的虚拟地址。"""
+    addresses = set()
+    overlap = max(0, len(needle) - 1)
+    for data_base, haystack in _iter_windows_region_chunks(regions, read_region, overlap=overlap):
+        pos = haystack.find(needle)
+        while pos >= 0:
+            addresses.add(data_base + pos)
+            pos = haystack.find(needle, pos + 1)
+    return addresses
+
+
+def _windows_v411_config_key_candidates(blob):
+    """从 Config.Cipher blob 中解出 (enc_key_hex, embedded_salt) 候选。"""
+    if not blob or len(blob) > WINDOWS_CONFIG_BLOB_MAX:
+        return []
+    decoded = _xor_repeat(blob, WINDOWS_CONFIG_XOR_MASK)
+    out = []
+    seen = set()
+    for match in WINDOWS_CONFIG_LITERAL_RE.finditer(decoded):
+        run = match.group(1).decode("ascii").lower()
+        starts = [0]
+        if len(run) > 96:
+            starts.extend(range(0, len(run) - 63, 32))
+            starts.append(len(run) - 64)
+        for start in dict.fromkeys(starts):
+            if start < 0 or start + 64 > len(run):
+                continue
+            enc_key_hex = run[start:start + 64]
+            try:
+                enc_key = bytes.fromhex(enc_key_hex)
+            except ValueError:
+                continue
+            if not _probable_32_byte_key(enc_key):
+                continue
+            embedded_salt = None
+            if start + 96 <= len(run):
+                embedded_salt = run[start + 64:start + 96]
+            item = (enc_key_hex, embedded_salt)
+            if item not in seen:
+                seen.add(item)
+                out.append(item)
+    return out
+
+
+def _verify_direct_key_candidate(enc_key_hex, embedded_salt, db_files, salt_to_dbs, key_map, remaining_salts):
+    """用 HMAC 校验一个候选 key，命中则写入 key_map，返回命中 salt 数。"""
+    if not remaining_salts:
+        return 0
+    try:
+        enc_key = bytes.fromhex(enc_key_hex)
+    except ValueError:
+        return 0
+    if not _probable_32_byte_key(enc_key):
+        return 0
+    matched = 0
+    target_salts = [embedded_salt] if embedded_salt in remaining_salts else list(remaining_salts)
+    for salt_hex in target_salts:
+        if salt_hex not in remaining_salts:
+            continue
+        for _rel, _path, _sz, s, page1 in db_files:
+            if s == salt_hex and verify_enc_key(enc_key, page1):
+                key_map[salt_hex] = enc_key_hex
+                remaining_salts.discard(salt_hex)
+                matched += 1
+                break
+    return matched
+
+
+def _scan_config_cipher(pid, regions, read_mem, db_files, salt_to_dbs, key_map, remaining_salts):
+    """只读扫描 WeChat 4.1.11+ 的 Config.Cipher 对象以提取密钥。"""
+    if not remaining_salts:
+        return 0
+
+    needle_addresses = _find_bytes_in_regions(
+        regions, lambda addr, sz: read_mem(addr, sz), WINDOWS_CONFIG_CIPHER_NAME
+    )
+    if not needle_addresses:
+        return 0
+
+    print(f"[*] Config.Cipher 扫描: 找到 {len(needle_addresses)} 个名称匹配")
+
+    pair_patterns = [
+        struct.pack("<Q", addr) + struct.pack("<Q", len(WINDOWS_CONFIG_CIPHER_NAME))
+        for addr in needle_addresses
+    ]
+    seen_config_ptrs = set()
+    seen_candidates = set()
+    matched_count = 0
+    candidate_count = 0
+
+    for base, data in _iter_windows_region_chunks(regions, read_mem, overlap=0x80):
+        if not remaining_salts:
+            break
+        for pattern in pair_patterns:
+            pos = data.find(pattern)
+            while pos >= 0:
+                qaddr = base + pos
+                node_base = qaddr - 0x10
+                node = read_mem(node_base, 0x50)
+                if not node or len(node) < 0x40:
+                    pos = data.find(pattern, pos + 1)
+                    continue
+                if _u64_from(node, 0x10) not in needle_addresses or _u64_from(node, 0x18) != len(WINDOWS_CONFIG_CIPHER_NAME):
+                    pos = data.find(pattern, pos + 1)
+                    continue
+                config_ptr = _u64_from(node, 0x28)
+                if not (0x10000 <= config_ptr < WINDOWS_MAX_USER_ADDRESS):
+                    pos = data.find(pattern, pos + 1)
+                    continue
+                seen_config_ptrs.add(config_ptr)
+
+                obj = read_mem(config_ptr + 0x88, 0x28)
+                if not obj or len(obj) < 0x18:
+                    pos = data.find(pattern, pos + 1)
+                    continue
+                data_ptr = _u64_from(obj, 0x8)
+                data_len = _u64_from(obj, 0x10)
+                if not (0 < data_len <= WINDOWS_CONFIG_BLOB_MAX and 0x10000 <= data_ptr < WINDOWS_MAX_USER_ADDRESS):
+                    pos = data.find(pattern, pos + 1)
+                    continue
+                blob = read_mem(data_ptr, int(data_len))
+                if not blob or len(blob) != data_len:
+                    pos = data.find(pattern, pos + 1)
+                    continue
+
+                for enc_key_hex, embedded_salt in _windows_v411_config_key_candidates(blob):
+                    candidate = (enc_key_hex, embedded_salt)
+                    if candidate in seen_candidates:
+                        continue
+                    seen_candidates.add(candidate)
+                    candidate_count += 1
+                    matched_count += _verify_direct_key_candidate(
+                        enc_key_hex, embedded_salt, db_files, salt_to_dbs, key_map, remaining_salts
+                    )
+                pos = data.find(pattern, pos + 1)
+
+    if matched_count:
+        print(f"[+] Config.Cipher 扫描匹配 {matched_count}/{len(salt_to_dbs)} 个 salt (候选={candidate_count})")
+    else:
+        print(f"[INFO] Config.Cipher 扫描未命中已验证密钥 (候选={candidate_count}, 节点={len(seen_config_ptrs)})")
+    return matched_count
+
+
 def extract_keys(db_dir, output_path, pid=None):
     """提取 Windows 微信数据库密钥。
+
+    优先使用 WeChat 4.1.11+ 的只读 Config.Cipher 扫描，失败时回退到旧版
+    ``x'...'`` 字符串扫描（WeChat ≤ 4.1.10）。
 
     Args:
         db_dir: 微信数据库目录
@@ -100,7 +310,28 @@ def extract_keys(db_dir, output_path, pid=None):
     all_hex_matches = 0
     t0 = time.time()
 
+    # Pass 1: WeChat 4.1.11+ Config.Cipher 只读扫描
     for pid_val, mem_kb in pids:
+        if not remaining_salts:
+            break
+        h = kernel32.OpenProcess(0x0010 | 0x0400, False, pid_val)
+        if not h:
+            print(f"[WARN] 无法打开进程 PID={pid_val}，跳过")
+            continue
+        try:
+            regions = _enum_regions(h)
+            read_mem = lambda addr, sz, _h=h: _read_mem(_h, addr, sz)
+            _scan_config_cipher(pid_val, regions, read_mem, db_files, salt_to_dbs, key_map, remaining_salts)
+        finally:
+            kernel32.CloseHandle(h)
+
+    if remaining_salts:
+        print(f"[*] Config.Cipher 未覆盖全部数据库，回退传统内存扫描 (剩余 {len(remaining_salts)} 个 salt)")
+
+    # Pass 2: 旧版 x'...' 字符串扫描（WeChat ≤ 4.1.10 回退路径）
+    for pid_val, mem_kb in pids:
+        if not remaining_salts:
+            break
         h = kernel32.OpenProcess(0x0010 | 0x0400, False, pid_val)
         if not h:
             print(f"[WARN] 无法打开进程 PID={pid_val}，跳过")
