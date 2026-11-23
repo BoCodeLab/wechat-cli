@@ -4,9 +4,8 @@
 
 **Query your local WeChat data from the command line.**
 
-[![npm version](https://img.shields.io/npm/v/@canghe_ai/wechat-cli.svg)](https://www.npmjs.com/package/@canghe_ai/wechat-cli)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/freestylefly/wechat-cli)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/BoCodeLab/wechat-cli)
 
 Chat history · Contacts · Sessions · Favorites · Statistics · Export
 
@@ -18,70 +17,35 @@ Chat history · Contacts · Sessions · Favorites · Statistics · Export
 
 ## ✨ Highlights
 
-- **🚀 Zero-config install** — `npm install -g` and you're done, no Python needed
-- **📦 11 commands** — sessions, history, search, contacts, members, stats, export, favorites, unread, new-messages, init
+- **🚀 Source installation** — use Python and Git on Windows, macOS, and Linux
+- **📦 12 commands** — sessions, history, search, contacts, members, stats, export, favorites, unread, new-messages, init, doctor
 - **🤖 AI-first** — JSON output by default, designed for LLM agent tool calls
 - **🔒 Fully local** — on-the-fly SQLCipher decryption, data never leaves your machine
 - **📊 Rich analytics** — top senders, message type breakdown, 24-hour activity charts
-- **📝 Flexible export** — Markdown or plain text, with time range filtering
+- **📝 Flexible export** — Markdown, plain text, or streaming JSONL with time range filtering
 
 ---
 
-## 📥 Installation (For Humans)
+## 📥 Installation
 
-AI Agents — skip ahead to "Installation (For AI Agents)" below.
-
-### npm (Recommended)
+Install from the `BoCodeLab/wechat-cli` checkout with Python 3.10 or later and Git. The public PyPI name `wechat-cli` currently points to a different project.
 
 ```bash
-npm install -g @canghe_ai/wechat-cli
-```
-
-> Currently ships a **macOS arm64** binary. Other platforms can use the pip method below. PRs with additional platform binaries are welcome.
-
-**Update to the latest version:**
-
-```bash
-npm update -g @canghe_ai/wechat-cli
-```
-
-### pip
-
-```bash
-pip install wechat-cli
-```
-
-Requires Python >= 3.10.
-
-### From Source
-
-```bash
-git clone https://github.com/freestylefly/wechat-cli.git
+git clone https://github.com/BoCodeLab/wechat-cli.git
 cd wechat-cli
-pip install -e .
+python -m pip install .
+wechat-cli --version
 ```
 
----
-
-## 📥 Installation (For AI Agents)
-
-Simply paste the following prompt into Claude Code, OpenClaw, or any AI coding agent:
-
-```bash
-帮我配置并安装：npm install -g @canghe_ai/wechat-cli
-```
-
-For example, in Claude Code:
-
-![install-claude-code-1](image/install-claude-code-1.png)
-
-Note: Make sure you have Node.js installed first. You can ask your agent to set it up if needed.
+If you already have the repository, run the last two commands from its root. On macOS or Linux, use `python3` if that is the name of your Python executable. If your shell cannot find `wechat-cli`, activate your Python environment or run `python -m wechat_cli.main --version`.
 
 ---
 
 ## 🚀 Quick Start
 
 ### Step 1 — Initialize
+
+Run `wechat-cli doctor --format text` to see the available data directories and configuration status. On Windows, directory detection checks WeChat's saved paths and the user's Documents folder, including redirected Documents. If multiple accounts appear, specify the chosen `db_storage` with `wechat-cli init --db-dir PATH`.
 
 Make sure WeChat is running, then:
 
@@ -160,7 +124,7 @@ wechat-cli search "deadline" --chat "Team" # Search messages
 
 ## 🤖 Using with AI Agents
 
-WeChat CLI is designed as an AI agent tool. All commands output structured JSON by default.
+WeChat CLI query commands output JSON by default. Use `history --structured` for individual message fields or `export --format jsonl` for a stream of message objects.
 
 ### Claude Code
 
@@ -225,7 +189,10 @@ wechat-cli history "Alice" --limit 100 --offset 50
 wechat-cli history "Team" --start-time "2026-04-01" --end-time "2026-04-03"
 wechat-cli history "Alice" --type link     # Only links
 wechat-cli history "Alice" --format text
+wechat-cli history "Alice" --structured   # Structured message objects
 ```
+
+With `--structured`, each message has a stable `message_id` within the source database, a Unix `timestamp` in seconds, `sender`, numeric `type` and `subtype`, a display label `msg_type`, and `text`. Default JSON keeps the formatted message strings.
 
 **Options:** `--limit`, `--offset`, `--start-time`, `--end-time`, `--type`, `--format`
 
@@ -272,8 +239,11 @@ Returns: total messages, type breakdown, top 10 senders, 24-hour activity distri
 ```bash
 wechat-cli export "Alice" --format markdown              # To stdout
 wechat-cli export "Alice" --format txt --output chat.txt  # To file
+wechat-cli export "Alice" --format jsonl --output chat.jsonl
 wechat-cli export "Team" --start-time "2026-04-01" --limit 1000
 ```
+
+JSONL streams UTF-8 message objects with the same fields as `history --structured`, one per line and newest first. Use `--limit` and the time filters to select the messages. With `--output`, the destination is published after a successful read.
 
 **Options:** `--format markdown|txt`, `--output`, `--start-time`, `--end-time`, `--limit`
 
@@ -297,11 +267,21 @@ wechat-cli unread --limit 10 --format text
 ### `new-messages` — Incremental New Messages
 
 ```bash
-wechat-cli new-messages                    # First: return unread + save state
-wechat-cli new-messages                    # Subsequent: only new since last call
+wechat-cli new-messages                    # First call: unread summaries and a baseline
+wechat-cli new-messages                    # Subsequent calls: individual new messages
+wechat-cli new-messages --cursor daily-report
 ```
 
-State saved at `~/.wechat-cli/last_check.json`. Delete to reset.
+`--cursor NAME` keeps independent progress for each consumer and account in `~/.wechat-cli/message-cursors.sqlite3`. For an existing default `last_check.json`, migration includes the last saved second once so messages sharing that timestamp can be recovered.
+
+### `doctor` — Local Diagnostics
+
+```bash
+wechat-cli doctor --format json
+wechat-cli --config path/to/config.json doctor --format text
+```
+
+`doctor` reports configuration, candidate data directories, the session database, and key file readiness. `ready` refers to the local configuration and file checks.
 
 ---
 
@@ -379,4 +359,4 @@ This project is built on top of [wechat-decrypt](https://github.com/ylytdeng/wec
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=freestylefly/wechat-cli&type=Date)](https://star-history.com/#freestylefly/wechat-cli&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=BoCodeLab/wechat-cli&type=Date)](https://star-history.com/#BoCodeLab/wechat-cli&Date)

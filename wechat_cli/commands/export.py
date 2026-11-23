@@ -1,11 +1,18 @@
-"""export 命令 — 导出聊天记录为 markdown 或 txt"""
+"""导出聊天记录为 Markdown、TXT 或 JSONL。"""
+
+import json
+from contextlib import closing
+from datetime import datetime
+from itertools import islice
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 import click
-from datetime import datetime
 
 from ..core.contacts import get_contact_names
 from ..core.messages import (
     collect_chat_history,
+    iter_chat_history,
     parse_time_range,
     resolve_chat_context,
     validate_pagination,
@@ -15,14 +22,14 @@ from ..output.formatter import output
 
 @click.command("export")
 @click.argument("chat_name")
-@click.option("--format", "fmt", default="markdown", type=click.Choice(["markdown", "txt"]), help="导出格式")
+@click.option("--format", "fmt", default="markdown", type=click.Choice(["markdown", "txt", "jsonl"]), help="导出格式")
 @click.option("--output", "output_path", default=None, help="输出文件路径（默认输出到 stdout）")
 @click.option("--start-time", default="", help="起始时间 YYYY-MM-DD [HH:MM[:SS]]")
 @click.option("--end-time", default="", help="结束时间 YYYY-MM-DD [HH:MM[:SS]]")
 @click.option("--limit", default=500, help="导出消息数量")
 @click.pass_context
 def export(ctx, chat_name, fmt, output_path, start_time, end_time, limit):
-    """导出聊天记录为 markdown 或纯文本
+    """导出聊天记录，JSONL 每行一个消息对象，最新的消息排在前面。
 
     \b
     示例:
@@ -48,6 +55,18 @@ def export(ctx, chat_name, fmt, output_path, start_time, end_time, limit):
         ctx.exit(1)
 
     names = get_contact_names(app.cache, app.decrypted_dir)
+    if fmt == 'jsonl':
+        failures = []
+        with closing(iter_chat_history(
+            chat_ctx, names, app.display_name_fn, failures, start_ts=start_ts, end_ts=end_ts,
+        )) as records:
+            count = _export_jsonl(islice(records, limit), failures, output_path)
+        if not count:
+            click.echo(f"{chat_ctx['display_name']} 无消息记录", err=True)
+        elif output_path:
+            click.echo(f"已导出到: {output_path}（{count} 条消息）", err=True)
+        return
+
     lines, failures = collect_chat_history(
         chat_ctx, names, app.display_name_fn,
         start_ts=start_ts, end_ts=end_ts, limit=limit, offset=0,
@@ -74,6 +93,41 @@ def export(ctx, chat_name, fmt, output_path, start_time, end_time, limit):
         click.echo(f"已导出到: {output_path}（{len(lines)} 条消息）", err=True)
     else:
         output(content, 'text')
+
+
+def _write_jsonl(records, failures, stream):
+    count = 0
+    for record in records:
+        json.dump(record, stream, ensure_ascii=False, separators=(",", ":"))
+        stream.write("\n")
+        count += 1
+    if failures:
+        raise click.ClickException(f"读取消息失败（{len(failures)} 项）: {failures[0]}")
+    stream.flush()
+    return count
+
+
+def _export_jsonl(records, failures, output_path):
+    if not output_path:
+        return _write_jsonl(records, failures, click.get_text_stream("stdout", encoding="utf-8"))
+
+    target = Path(output_path).expanduser().absolute()
+    temporary_path = None
+    try:
+        with NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="\n", dir=target.parent,
+            prefix=f".{target.name}.", suffix=".tmp", delete=False,
+        ) as stream:
+            temporary_path = Path(stream.name)
+            count = _write_jsonl(records, failures, stream)
+        if count:
+            temporary_path.replace(target)
+        return count
+    except OSError as error:
+        raise click.ClickException(f"无法写入导出文件: {error}") from error
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _format_markdown(display_name, chat_type, time_range, export_time, lines):

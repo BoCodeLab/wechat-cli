@@ -21,10 +21,11 @@ from ..output.formatter import output
 @click.option("--start-time", default="", help="起始时间 YYYY-MM-DD [HH:MM[:SS]]")
 @click.option("--end-time", default="", help="结束时间 YYYY-MM-DD [HH:MM[:SS]]")
 @click.option("--format", "fmt", default="json", type=click.Choice(["json", "text"]), help="输出格式")
+@click.option("--structured", is_flag=True, help="JSON 的 messages 使用结构化消息对象")
 @click.option("--type", "msg_type", default=None, type=click.Choice(MSG_TYPE_NAMES), help="消息类型过滤")
 @click.option("--media", is_flag=True, help="解析媒体文件路径（图片/文件/视频/语音）")
 @click.pass_context
-def history(ctx, chat_name, limit, offset, start_time, end_time, fmt, msg_type, media):
+def history(ctx, chat_name, limit, offset, start_time, end_time, fmt, structured, msg_type, media):
     """获取指定聊天的消息记录
 
     \b
@@ -35,6 +36,8 @@ def history(ctx, chat_name, limit, offset, start_time, end_time, fmt, msg_type, 
       wechat-cli history "张三" --format text             # 纯文本输出
     """
     app = ctx.obj
+    if structured and fmt != 'json':
+        raise click.UsageError("--structured 需要 JSON 输出")
 
     try:
         validate_pagination(limit, offset, limit_max=None)
@@ -53,10 +56,10 @@ def history(ctx, chat_name, limit, offset, start_time, end_time, fmt, msg_type, 
 
     names = get_contact_names(app.cache, app.decrypted_dir)
     type_filter = MSG_TYPE_FILTERS[msg_type] if msg_type else None
-    lines, failures = collect_chat_history(
+    messages, failures = collect_chat_history(
         chat_ctx, names, app.display_name_fn,
         start_ts=start_ts, end_ts=end_ts, limit=limit, offset=offset,
-        msg_type_filter=type_filter, resolve_media=media, db_dir=app.db_dir,
+        msg_type_filter=type_filter, resolve_media=media, db_dir=app.db_dir, structured=structured,
     )
 
     if fmt == 'json':
@@ -64,24 +67,24 @@ def history(ctx, chat_name, limit, offset, start_time, end_time, fmt, msg_type, 
             'chat': chat_ctx['display_name'],
             'username': chat_ctx['username'],
             'is_group': chat_ctx['is_group'],
-            'count': len(lines),
+            'count': len(messages),
             'offset': offset,
             'limit': limit,
             'start_time': start_time or None,
             'end_time': end_time or None,
             'type': msg_type or None,
-            'messages': lines,
+            'messages': messages,
             'failures': failures if failures else None,
         }, 'json')
     else:
-        header = f"{chat_ctx['display_name']} 的消息记录（返回 {len(lines)} 条，offset={offset}, limit={limit}）"
+        header = f"{chat_ctx['display_name']} 的消息记录（返回 {len(messages)} 条，offset={offset}, limit={limit}）"
         if chat_ctx['is_group']:
             header += " [群聊]"
         if start_time or end_time:
             header += f"\n时间范围: {start_time or '最早'} ~ {end_time or '最新'}"
         if failures:
             header += "\n查询失败: " + "；".join(failures)
-        if lines:
-            output(header + ":\n\n" + "\n".join(lines), 'text')
+        if messages:
+            output(header + ":\n\n" + "\n".join(messages), 'text')
         else:
             output(f"{chat_ctx['display_name']} 无消息记录", 'text')

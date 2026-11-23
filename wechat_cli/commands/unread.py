@@ -12,27 +12,7 @@ from ..core.messages import decompress_content, format_msg_type
 from ..output.formatter import output
 
 
-@click.command("unread")
-@click.option("--limit", default=50, help="返回的会话数量")
-@click.option("--format", "fmt", default="json", type=click.Choice(["json", "text"]), help="输出格式")
-@click.pass_context
-def unread(ctx, limit, fmt):
-    """查看未读会话
-
-    \b
-    示例:
-      wechat-cli unread                # 查看所有未读会话
-      wechat-cli unread --limit 10     # 最多显示 10 个
-      wechat-cli unread --format text  # 纯文本输出
-    """
-    app = ctx.obj
-
-    path = app.cache.get(os.path.join("session", "session.db"))
-    if not path:
-        click.echo("错误: 无法解密 session.db", err=True)
-        ctx.exit(3)
-
-    names = get_contact_names(app.cache, app.decrypted_dir)
+def read_unread_sessions(path, names, limit=-1):
     with closing(sqlite3.connect(path)) as conn:
         rows = conn.execute("""
             SELECT username, unread_count, summary, last_timestamp,
@@ -69,6 +49,31 @@ def unread(ctx, limit, fmt):
             'timestamp': ts,
             'time': datetime.fromtimestamp(ts).strftime('%m-%d %H:%M'),
         })
+    return results
+
+
+@click.command("unread")
+@click.option("--limit", default=50, help="返回的会话数量")
+@click.option("--format", "fmt", default="json", type=click.Choice(["json", "text"]), help="输出格式")
+@click.pass_context
+def unread(ctx, limit, fmt):
+    """查看未读会话
+
+    \b
+    示例:
+      wechat-cli unread                # 查看所有未读会话
+      wechat-cli unread --limit 10     # 最多显示 10 个
+      wechat-cli unread --format text  # 纯文本输出
+    """
+    app = ctx.obj
+
+    path = app.cache.get(os.path.join("session", "session.db"))
+    if not path:
+        click.echo("错误: 无法解密 session.db", err=True)
+        ctx.exit(3)
+
+    names = get_contact_names(app.cache, app.decrypted_dir)
+    results = read_unread_sessions(path, names, limit)
 
     if fmt == 'json':
         output(results, 'json')

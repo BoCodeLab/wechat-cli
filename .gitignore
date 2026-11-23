@@ -37,6 +37,7 @@ Thumbs.db
 
 # Sensitive data — NEVER commit
 *.json
+*.jsonl
 !pyproject.toml
 !npm/**/package.json
 

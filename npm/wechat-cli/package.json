@@ -22,7 +22,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/freestylefly/wechat-cli"
+    "url": "https://github.com/BoCodeLab/wechat-cli"
   },
   "publishConfig": {
     "access": "public"

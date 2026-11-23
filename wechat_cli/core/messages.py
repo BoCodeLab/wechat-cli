@@ -1,12 +1,14 @@
 """消息查询 — 分表查找、分页、格式化"""
 
 import hashlib
+import heapq
 import os
 import re
 import sqlite3
 import xml.etree.ElementTree as ET
-from contextlib import closing
+from contextlib import ExitStack, closing
 from datetime import datetime
+from itertools import islice
 
 import zstandard as zstd
 
@@ -16,7 +18,9 @@ _zstd_dctx = zstd.ZstdDecompressor()
 _XML_UNSAFE_RE = re.compile(r'<!DOCTYPE|<!ENTITY', re.IGNORECASE)
 _XML_PARSE_MAX_LEN = 20000
 _QUERY_LIMIT_MAX = 500
-_HISTORY_QUERY_BATCH_SIZE = 500
+_MESSAGE_COLUMNS = (
+    "local_id, local_type, create_time, real_sender_id, message_content, WCDB_CT_message_content"
+)
 
 # 消息类型过滤映射: 名称 -> (base_type,) 或 (base_type, sub_type)
 MSG_TYPE_FILTERS = {
@@ -67,7 +71,7 @@ def _find_msg_tables_for_user(username, msg_db_keys, cache):
             if not exists:
                 continue
             max_ct = conn.execute(f"SELECT MAX(create_time) FROM [{table_name}]").fetchone()[0] or 0
-            matches.append({'db_path': path, 'table_name': table_name, 'max_create_time': max_ct})
+            matches.append({'db_path': path, 'db_key': rel_key, 'table_name': table_name, 'max_create_time': max_ct})
         except Exception:
             pass
         finally:
@@ -391,9 +395,6 @@ def _build_message_filters(start_ts=None, end_ts=None, keyword='', msg_type_filt
     if end_ts is not None:
         clauses.append('create_time <= ?')
         params.append(end_ts)
-    if keyword:
-        clauses.append('message_content LIKE ?')
-        params.append(f'%{keyword}%')
     if msg_type_filter is not None:
         base_type = msg_type_filter[0]
         clauses.append('(local_type & 0xFFFFFFFF) = ?')
@@ -401,25 +402,35 @@ def _build_message_filters(start_ts=None, end_ts=None, keyword='', msg_type_filt
         if len(msg_type_filter) > 1:
             clauses.append('((local_type >> 32) & 0xFFFFFFFF) = ?')
             params.append(msg_type_filter[1])
+    if keyword:
+        clauses.append("""
+            CASE WHEN typeof(message_content) = 'blob'
+                 THEN wechat_message_text(message_content, WCDB_CT_message_content)
+                 ELSE message_content
+            END LIKE ?
+        """.strip())
+        params.append(f'%{keyword}%')
     return clauses, params
 
 
-def _query_messages(conn, table_name, start_ts=None, end_ts=None, keyword='', limit=20, offset=0, msg_type_filter=None):
+def _query_messages(conn, table_name, start_ts=None, end_ts=None, keyword='', limit=20, offset=0, msg_type_filter=None, *, stream=False):
     if not _is_safe_msg_table_name(table_name):
         raise ValueError(f'非法消息表名: {table_name}')
+    if keyword:
+        conn.create_function("wechat_message_text", 2, decompress_content, deterministic=True)
     clauses, params = _build_message_filters(start_ts, end_ts, keyword, msg_type_filter)
     where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ''
     sql = f"""
-        SELECT local_id, local_type, create_time, real_sender_id, message_content,
-               WCDB_CT_message_content
+        SELECT {_MESSAGE_COLUMNS}
         FROM [{table_name}]
         {where_sql}
-        ORDER BY create_time DESC
+        ORDER BY create_time DESC, local_id DESC
     """
-    if limit is None:
-        return conn.execute(sql, params).fetchall()
-    sql += "\n        LIMIT ? OFFSET ?"
-    return conn.execute(sql, (*params, limit, offset)).fetchall()
+    if limit is not None:
+        sql += "\n        LIMIT ? OFFSET ?"
+        params.extend((limit, offset))
+    cursor = conn.execute(sql, params)
+    return cursor if stream else cursor.fetchall()
 
 
 # ---- 时间解析 ----
@@ -493,6 +504,7 @@ def _iter_table_contexts(ctx):
         yield {
             'query': ctx['query'], 'username': ctx['username'], 'display_name': ctx['display_name'],
             'db_path': table['db_path'], 'table_name': table['table_name'],
+            'db_key': table.get('db_key', os.path.basename(table['db_path'])),
             'is_group': ctx['is_group'],
         }
 
@@ -510,9 +522,13 @@ def _page_ranked_entries(entries, limit, offset):
 
 # ---- 构建行 ----
 
-def _build_history_line(row, ctx, names, id_to_username, display_name_fn, resolve_media=False, db_dir=None):
+def _message_table_id(ctx):
+    db_key = ctx['db_key'].replace('\\', '/')
+    return f"{db_key}:{ctx['table_name']}"
+
+
+def _build_message_record(row, ctx, names, id_to_username, display_name_fn, resolve_media=False, db_dir=None):
     local_id, local_type, create_time, real_sender_id, content, ct = row
-    time_str = datetime.fromtimestamp(create_time).strftime('%Y-%m-%d %H:%M')
     content = decompress_content(content, ct)
     if content is None:
         content = '(无法解压)'
@@ -521,11 +537,27 @@ def _build_history_line(row, ctx, names, id_to_username, display_name_fn, resolv
         db_dir=db_dir, create_time_ts=create_time, resolve_media=resolve_media,
     )
     sender_label = _resolve_sender_label(
-        real_sender_id, sender, ctx['is_group'], ctx['username'], ctx['display_name'], names, id_to_username, display_name_fn
+        real_sender_id, sender, ctx['is_group'], ctx['username'], ctx['display_name'], names, id_to_username, display_name_fn,
     )
-    if sender_label:
-        return create_time, f'[{time_str}] {sender_label}: {text}'
-    return create_time, f'[{time_str}] {text}'
+    base_type, subtype = _split_msg_type(local_type)
+    return {
+        'message_id': f"{_message_table_id(ctx)}:{local_id}",
+        'chat': ctx['display_name'],
+        'username': ctx['username'],
+        'is_group': ctx['is_group'],
+        'timestamp': create_time,
+        'sender': sender_label,
+        'type': base_type,
+        'subtype': subtype,
+        'msg_type': format_msg_type(local_type),
+        'text': text,
+    }
+
+
+def _format_history_line(record):
+    time_str = datetime.fromtimestamp(record['timestamp']).strftime('%Y-%m-%d %H:%M')
+    sender = f"{record['sender']}: " if record['sender'] else ""
+    return f"[{time_str}] {sender}{record['text']}"
 
 
 def _build_search_entry(row, ctx, names, id_to_username, display_name_fn, resolve_media=False, db_dir=None):
@@ -552,37 +584,51 @@ def _build_search_entry(row, ctx, names, id_to_username, display_name_fn, resolv
 
 # ---- 聊天记录查询 ----
 
-def collect_chat_history(ctx, names, display_name_fn, start_ts=None, end_ts=None, limit=20, offset=0, msg_type_filter=None, resolve_media=False, db_dir=None):
-    collected = []
+def _iter_history_table(table_ctx, failures, start_ts, end_ts, msg_type_filter):
+    try:
+        with closing(sqlite3.connect(table_ctx['db_path'])) as conn:
+            id_to_username = _load_name2id_maps(conn)
+            for row in _query_messages(
+                conn, table_ctx['table_name'], start_ts=start_ts, end_ts=end_ts,
+                limit=None, msg_type_filter=msg_type_filter, stream=True,
+            ):
+                if not isinstance(row[2], (int, float)) or not isinstance(row[0], int):
+                    failures.append(f"local_id={row[0]}: 无效的消息标识或时间戳")
+                    continue
+                yield row, table_ctx, id_to_username
+    except (OSError, sqlite3.Error, ValueError) as error:
+        failures.append(f"{table_ctx['db_key']}: {error}")
+
+
+def iter_chat_history(ctx, names, display_name_fn, failures, *, start_ts=None, end_ts=None,
+                      msg_type_filter=None, resolve_media=False, db_dir=None, structured=True):
+    """按时间从新到旧归并消息表，逐条生成消息。"""
+    with ExitStack() as stack:
+        streams = [
+            stack.enter_context(closing(_iter_history_table(table_ctx, failures, start_ts, end_ts, msg_type_filter)))
+            for table_ctx in _iter_table_contexts(ctx)
+        ]
+        rows = heapq.merge(*streams, reverse=True, key=lambda item: (item[0][2], item[1]['db_key'], item[0][0]))
+        for row, table_ctx, id_to_username in rows:
+            try:
+                record = _build_message_record(
+                    row, table_ctx, names, id_to_username, display_name_fn, resolve_media=resolve_media, db_dir=db_dir,
+                )
+                yield record if structured else _format_history_line(record)
+            except Exception as error:
+                failures.append(f"local_id={row[0]}: {error}")
+
+
+def collect_chat_history(ctx, names, display_name_fn, start_ts=None, end_ts=None, limit=20, offset=0,
+                         msg_type_filter=None, resolve_media=False, db_dir=None, *, structured=False):
     failures = []
-    candidate_limit = _candidate_page_size(limit, offset)
-    batch_size = min(candidate_limit, _HISTORY_QUERY_BATCH_SIZE)
-
-    for table_ctx in _iter_table_contexts(ctx):
-        try:
-            with closing(sqlite3.connect(table_ctx['db_path'])) as conn:
-                id_to_username = _load_name2id_maps(conn)
-                fetch_offset = 0
-                before = len(collected)
-                while len(collected) - before < candidate_limit:
-                    rows = _query_messages(conn, table_ctx['table_name'], start_ts=start_ts, end_ts=end_ts, limit=batch_size, offset=fetch_offset, msg_type_filter=msg_type_filter)
-                    if not rows:
-                        break
-                    fetch_offset += len(rows)
-                    for row in rows:
-                        try:
-                            collected.append(_build_history_line(row, table_ctx, names, id_to_username, display_name_fn, resolve_media=resolve_media, db_dir=db_dir))
-                        except Exception as e:
-                            failures.append(f"local_id={row[0]}: {e}")
-                        if len(collected) - before >= candidate_limit:
-                            break
-                    if len(rows) < batch_size:
-                        break
-        except Exception as e:
-            failures.append(f"{table_ctx['db_path']}: {e}")
-
-    paged = _page_ranked_entries(collected, limit, offset)
-    return [line for _, line in paged], failures
+    with closing(iter_chat_history(
+        ctx, names, display_name_fn, failures, start_ts=start_ts, end_ts=end_ts,
+        msg_type_filter=msg_type_filter, resolve_media=resolve_media, db_dir=db_dir, structured=structured,
+    )) as records:
+        page = list(islice(records, offset, offset + limit))
+    page.reverse()
+    return page, failures
 
 
 # ---- 搜索查询 ----
@@ -646,7 +692,7 @@ def search_all_messages(msg_db_keys, cache, names, keyword, display_name_fn, sta
             continue
         try:
             with closing(sqlite3.connect(path)) as conn:
-                contexts = _load_search_contexts_from_db(conn, path, names)
+                contexts = _load_message_table_contexts(conn, path, rel_key, names)
                 db_entries, db_failures = _collect_search_entries(
                     conn, contexts, names, keyword, display_name_fn,
                     start_ts=start_ts, end_ts=end_ts, candidate_limit=candidate_limit,
@@ -659,28 +705,74 @@ def search_all_messages(msg_db_keys, cache, names, keyword, display_name_fn, sta
     return collected, failures
 
 
-def _load_search_contexts_from_db(conn, db_path, names):
+def _load_message_table_contexts(conn, db_path, db_key, names, id_to_username=None):
     tables = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Msg_%'"
-    ).fetchall()
-    table_to_username = {}
-    try:
-        for (user_name,) in conn.execute("SELECT user_name FROM Name2Id").fetchall():
-            if not user_name:
-                continue
-            table_hash = hashlib.md5(user_name.encode()).hexdigest()
-            table_to_username[f"Msg_{table_hash}"] = user_name
-    except sqlite3.Error:
-        pass
+        "SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'Msg_*' ORDER BY name"
+    )
+    if id_to_username is None:
+        id_to_username = _load_name2id_maps(conn)
+    table_to_username = {
+        f"Msg_{hashlib.md5(username.encode()).hexdigest()}": username
+        for username in id_to_username.values()
+    }
     contexts = []
     for (table_name,) in tables:
+        if not _is_safe_msg_table_name(table_name):
+            continue
         username = table_to_username.get(table_name, '')
         display_name = names.get(username, username) if username else table_name
         contexts.append({
             'query': display_name, 'username': username, 'display_name': display_name,
-            'db_path': db_path, 'table_name': table_name, 'is_group': '@chatroom' in username,
+            'db_path': db_path, 'db_key': db_key, 'table_name': table_name, 'is_group': '@chatroom' in username,
         })
     return contexts
+
+
+def collect_new_messages(msg_db_keys, cache, names, display_name_fn, previous, legacy_timestamps=None):
+    """记录每个分库消息表的 local_id，按实际消息读取新增行。"""
+    checkpoints = dict(previous or {})
+    baseline = previous is None and legacy_timestamps is None
+    legacy_cutoff = max(legacy_timestamps.values(), default=0) if legacy_timestamps is not None else 0
+    messages = []
+    opened_any = False
+    for db_key in msg_db_keys:
+        db_path = cache.get(db_key)
+        if not db_path:
+            continue
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute("BEGIN")
+            opened_any = True
+            id_to_username = _load_name2id_maps(conn)
+            for ctx in _load_message_table_contexts(conn, db_path, db_key, names, id_to_username):
+                table = ctx['table_name']
+                table_id = _message_table_id(ctx)
+                latest_id = conn.execute(f"SELECT MAX(local_id) FROM [{table}]").fetchone()[0]
+                previous_id = checkpoints.get(table_id)
+                checkpoints[table_id] = latest_id
+                if baseline or latest_id is None or latest_id == previous_id:
+                    continue
+
+                if previous_id is not None and latest_id > previous_id:
+                    where, params = "WHERE local_id > ?", (previous_id,)
+                elif legacy_timestamps is not None:
+                    # 旧版只记秒级时间戳，包含边界秒以免漏掉同秒消息。
+                    where = "WHERE create_time >= ?"
+                    params = (legacy_timestamps.get(ctx['username'], legacy_cutoff),)
+                else:
+                    # 新表或 local_id 已重置，逐条返回当前记录。
+                    where, params = "", ()
+
+                rows = conn.execute(
+                    f"SELECT {_MESSAGE_COLUMNS} FROM [{table}] {where} ORDER BY local_id",
+                    params,
+                )
+                for row in rows:
+                    messages.append(_build_message_record(row, ctx, names, id_to_username, display_name_fn))
+
+    if not opened_any:
+        raise sqlite3.DatabaseError("没有可读取的消息数据库")
+    messages.sort(key=lambda message: message['timestamp'])
+    return messages, checkpoints
 
 
 # ---- 多聊天上下文解析 ----

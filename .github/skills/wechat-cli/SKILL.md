@@ -10,8 +10,10 @@ description: Query the user's local WeChat data (chat history, messages, contact
 ## 常用命令
 
 ```bash
+wechat-cli doctor --format json                       # 检查本地配置和数据目录
 wechat-cli sessions --limit 10                       # 最近会话
 wechat-cli history "名字" --limit 20                  # 和某人的聊天记录
+wechat-cli history "名字" --structured                # 获取结构化消息对象
 wechat-cli history "群名" --limit 50 --format text    # 纯文本聊天记录
 wechat-cli search "关键词" --chat "群名"               # 在指定聊天里搜消息
 wechat-cli search "关键词" --limit 20                 # 全局搜索
@@ -21,9 +23,10 @@ wechat-cli members "群名"                             # 群成员列表
 wechat-cli stats "群名" --format text                 # 聊天统计（发言排行/类型分布/活跃图）
 wechat-cli export "名字" --format markdown             # 导出聊天记录到 stdout
 wechat-cli export "名字" --format txt --output x.txt   # 导出到文件
+wechat-cli export "名字" --format jsonl                # 最新在前，逐条输出消息对象
 wechat-cli favorites --query "关键词"                 # 搜索收藏
 wechat-cli unread                                     # 未读会话
-wechat-cli new-messages                               # 上次以来的新消息（增量）
+wechat-cli new-messages --cursor agent                # 使用独立游标逐条读取新增消息
 ```
 
 ## 常用选项
@@ -39,5 +42,5 @@ wechat-cli new-messages                               # 上次以来的新消息
 
 - 默认 JSON 输出，直接解析；需要人类可读时加 `--format text`。
 - 终端中文乱码是 Windows 控制台 GBK/UTF-8 显示差异，数据本身正确；可设 `PYTHONIOENCODING=utf-8` 或加 `--format text` 缓解。
-- 若提示「未找到微信数据目录」，确认微信已登录运行，必要时 `wechat-cli init --force` 重新提取密钥。
-- `new-messages` 的游标状态在 `~/.wechat-cli/last_check.json`，删除可重置。
+- 若提示「未找到微信数据目录」，先用 `wechat-cli doctor` 查看候选目录和初始化状态。
+- `new-messages` 首次返回未读摘要，后续逐条返回新消息。各账号和游标名称的读取进度保存在 `~/.wechat-cli/message-cursors.sqlite3`。

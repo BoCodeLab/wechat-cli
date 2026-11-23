@@ -25,6 +25,7 @@ function getBinaryPath() {
   const pkg = PLATFORM_PACKAGES[platformKey];
   if (!pkg) {
     console.error(`wechat-cli: unsupported platform ${platformKey}`);
+    console.error('Install from source: https://github.com/BoCodeLab/wechat-cli');
     process.exit(1);
   }
 
@@ -32,15 +33,19 @@ function getBinaryPath() {
     return require.resolve(`${pkg}/bin/wechat-cli${ext}`);
   } catch {
     // 3. fallback: 直接找 node_modules 下的路径
-    const modPath = path.join(
-      path.dirname(require.resolve(`${pkg}/package.json`)),
-      `bin/wechat-cli${ext}`
-    );
-    if (fs.existsSync(modPath)) return modPath;
+    try {
+      const modPath = path.join(
+        path.dirname(require.resolve(`${pkg}/package.json`)),
+        `bin/wechat-cli${ext}`
+      );
+      if (fs.existsSync(modPath)) return modPath;
+    } catch {
+      // 平台包未安装。
+    }
   }
 
   console.error(`wechat-cli: binary not found for ${platformKey}`);
-  console.error('Try: npm install --force @canghe/wechat-cli');
+  console.error('Install from source: https://github.com/BoCodeLab/wechat-cli');
   process.exit(1);
 }
 

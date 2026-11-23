@@ -4,7 +4,7 @@ import atexit
 import json
 import os
 
-from .config import load_config, STATE_DIR
+from .config import CONFIG_FILE, STATE_DIR, load_config
 from .db_cache import DBCache
 from .key_utils import strip_key_metadata
 from .messages import find_msg_db_keys
@@ -14,7 +14,8 @@ class AppContext:
     """每次 CLI 调用初始化一次，被所有命令共享。"""
 
     def __init__(self, config_path=None):
-        self.cfg = load_config(config_path)
+        self.config_path = os.path.abspath(os.path.expanduser(config_path or CONFIG_FILE))
+        self.cfg = load_config(self.config_path)
         self.db_dir = self.cfg["db_dir"]
         self.decrypted_dir = self.cfg["decrypted_dir"]
         self.keys_file = self.cfg["keys_file"]

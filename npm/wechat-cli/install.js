@@ -32,5 +32,5 @@ try {
 } catch {
   // Platform package was not installed (npm --no-optional or unsupported)
   console.log(`wechat-cli: platform package ${pkg} not installed`);
-  console.log('To fix: npm install --force @canghe_ai/wechat-cli');
+  console.log('Install from source: https://github.com/BoCodeLab/wechat-cli');
 }

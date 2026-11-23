@@ -4,9 +4,8 @@
 
 **命令行查询本地微信数据，专为 AI 集成设计。**
 
-[![npm version](https://img.shields.io/npm/v/@canghe_ai/wechat-cli.svg)](https://www.npmjs.com/package/@canghe_ai/wechat-cli)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/freestylefly/wechat-cli)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/BoCodeLab/wechat-cli)
 
 聊天记录 · 联系人 · 会话 · 收藏 · 统计 · 导出
 
@@ -18,68 +17,33 @@
 
 ## ✨ 功能亮点
 
-- **🚀 开箱即用** — `npm install -g` 一键安装，无需 Python
-- **📦 11 个命令** — sessions、history、search、contacts、members、stats、export、favorites、unread、new-messages、init
+- **🚀 从源码安装** — Windows、macOS 和 Linux 均可通过 Python 和 Git 安装
+- **📦 12 个命令** — sessions、history、search、contacts、members、stats、export、favorites、unread、new-messages、init、doctor
 - **🤖 AI 优先** — 默认 JSON 输出，专为 LLM Agent 工具调用设计
 - **🔒 全程本地** — SQLCipher 即时解密，数据不出本机
 - **📊 丰富统计** — 发言排行、消息类型分布、24 小时活跃图
-- **📝 灵活导出** — Markdown 或纯文本，支持时间范围过滤
+- **📝 灵活导出** — 支持 Markdown、纯文本和流式 JSONL，可按时间范围筛选
 
 ---
 
-## 📥 安装（给人类看）
+## 📥 安装
 
-AI Agent 请直接移步到“安装（给 Agent 看）”
-
-### npm（推荐）
+用 Git 获取 `BoCodeLab/wechat-cli` 源码，并用 Python 3.10 或更高版本安装。公共 PyPI 上的 `wechat-cli` 同名包属于另一个项目。
 
 ```bash
-npm install -g @canghe_ai/wechat-cli
-```
-
-> 目前提供 **macOS arm64** 二进制。其他平台可使用下方 pip 安装。欢迎提交其他平台二进制 PR。
-
-**更新到最新版本：**
-
-```bash
-npm update -g @canghe_ai/wechat-cli
-```
-
-### pip
-
-```bash
-pip install wechat-cli
-```
-
-需要 Python >= 3.10。
-
-### 从源码安装
-
-```bash
-git clone https://github.com/freestylefly/wechat-cli.git
+git clone https://github.com/BoCodeLab/wechat-cli.git
 cd wechat-cli
-pip install -e .
+python -m pip install .
+wechat-cli --version
 ```
 
----
-
-## 📥 安装（给 Agent 看）
-
-直接将在你的 Claude Code 或者 OpenClaw 中输入以下提示即可：
-
-```bash
-帮我配置并安装：npm install -g @canghe_ai/wechat-cli
-```
-
-比如在 Claude Code 中输入：
-
-![install-claude-code-1](image/install-claude-code-1.png)
-
-注意：请先确保有 node.js 环境。没雨可以让你的 cc 安装环境。
+已有本地仓库时，在仓库根目录执行后两条命令即可。在 macOS 或 Linux 上，若 Python 命令名为 `python3`，请用 `python3` 替换 `python`。如果终端找不到 `wechat-cli`，请激活安装时使用的 Python 环境，或运行 `python -m wechat_cli.main --version` 验证安装。
 
 ## 🚀 快速开始
 
 ### 第一步 — 初始化
+
+运行 `wechat-cli doctor --format text` 查看候选数据目录和配置状态。Windows 会检查微信保存的路径和用户的「文档」目录，包括重定向后的「文档」。如果检测到多个账号，请选定账号后用 `wechat-cli init --db-dir 路径` 指定它的 `db_storage`。
 
 确保微信正在运行，然后：
 
@@ -158,7 +122,7 @@ wechat-cli search "截止日期" --chat "项目组" # 搜索消息
 
 ## 🤖 AI 工具集成
 
-WeChat CLI 专为 AI Agent 设计，所有命令默认输出结构化 JSON。
+查询命令默认输出 JSON。用 `history --structured` 获取单条消息的字段，或用 `export --format jsonl` 逐条读取消息对象。
 
 ### Claude Code
 
@@ -223,9 +187,10 @@ wechat-cli history "张三" --limit 100 --offset 50
 wechat-cli history "交流群" --start-time "2026-04-01" --end-time "2026-04-03"
 wechat-cli history "张三" --type link      # 只看链接
 wechat-cli history "张三" --format text
+wechat-cli history "张三" --structured     # 结构化消息对象
 ```
 
-**选项：** `--limit`、`--offset`、`--start-time`、`--end-time`、`--type`、`--format`
+使用 `--structured` 时，每条消息都有来源库内稳定的 `message_id`、Unix 秒级 `timestamp`、`sender`、数字类型 `type` 和 `subtype`、类型名称 `msg_type` 及正文 `text`。默认 JSON 仍输出格式化的消息字符串。
 
 ### `search` — 搜索消息
 
@@ -270,10 +235,11 @@ wechat-cli stats "AI交流群" --format text
 ```bash
 wechat-cli export "张三" --format markdown              # 输出到 stdout
 wechat-cli export "张三" --format txt --output chat.txt  # 输出到文件
+wechat-cli export "张三" --format jsonl --output chat.jsonl
 wechat-cli export "群聊" --start-time "2026-04-01" --limit 1000
 ```
 
-**选项：** `--format markdown|txt`、`--output`、`--start-time`、`--end-time`、`--limit`
+JSONL 按最新消息在前的顺序逐条写出 UTF-8 消息对象，字段与 `history --structured` 一致。可用 `--limit` 和时间范围筛选。指定 `--output` 时，读取成功后才写入最终路径。
 
 ### `favorites` — 微信收藏
 
@@ -295,11 +261,21 @@ wechat-cli unread --limit 10 --format text
 ### `new-messages` — 增量新消息
 
 ```bash
-wechat-cli new-messages                    # 首次: 返回未读消息 + 保存状态
-wechat-cli new-messages                    # 后续: 仅返回上次以来的新消息
+wechat-cli new-messages                    # 首次返回未读摘要并建立游标
+wechat-cli new-messages                    # 后续逐条返回新增消息
+wechat-cli new-messages --cursor daily-report
 ```
 
-状态保存在 `~/.wechat-cli/last_check.json`，删除此文件可重置。
+各账号和调用方可用 `--cursor 名称` 在 `~/.wechat-cli/message-cursors.sqlite3` 中维护独立进度。默认游标从旧版 `last_check.json` 迁移时会重新读一次记录的最后一秒，以补回同秒消息。
+
+### `doctor` — 本地诊断
+
+```bash
+wechat-cli doctor --format json
+wechat-cli --config path/to/config.json doctor --format text
+```
+
+`doctor` 在初始化前也可运行，报告配置、候选数据目录、会话库和密钥文件状态。`ready` 表示本地配置和文件检查通过。
 
 ---
 
@@ -377,4 +353,4 @@ wechat-cli new-messages                    # 后续: 仅返回上次以来的新
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=freestylefly/wechat-cli&type=Date)](https://star-history.com/#freestylefly/wechat-cli&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=BoCodeLab/wechat-cli&type=Date)](https://star-history.com/#BoCodeLab/wechat-cli&Date)

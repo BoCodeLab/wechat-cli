@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import sys
+from pathlib import Path
 
 _SYSTEM = platform.system().lower()
 
@@ -45,41 +46,62 @@ def _choose_candidate(candidates):
     return None
 
 
-def _auto_detect_db_dir_windows():
-    appdata = os.environ.get("APPDATA", "")
-    config_dir = os.path.join(appdata, "Tencent", "xwechat", "config")
-    if not os.path.isdir(config_dir):
-        return None
-    data_roots = []
-    for ini_file in glob_mod.glob(os.path.join(config_dir, "*.ini")):
+def _windows_documents_dir():
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, "Personal")
+        return Path(os.path.expandvars(value))
+    except (ImportError, OSError, TypeError):
+        return Path.home() / "Documents"
+
+
+def _windows_config_roots():
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return
+    config_dir = Path(appdata) / "Tencent" / "xwechat" / "config"
+    for ini_file in sorted(config_dir.glob("*.ini")):
         try:
-            content = None
-            for enc in ("utf-8", "gbk"):
-                try:
-                    with open(ini_file, "r", encoding=enc) as f:
-                        content = f.read(1024).strip()
-                    break
-                except UnicodeDecodeError:
-                    continue
-            if not content or any(c in content for c in "\n\r\x00"):
-                continue
-            if os.path.isdir(content):
-                data_roots.append(content)
+            with ini_file.open("rb") as file:
+                raw = file.read(4096)
         except OSError:
             continue
+        for encoding in ("utf-8-sig", "utf-16", "gbk"):
+            try:
+                value = raw.decode(encoding).strip().strip('"')
+            except UnicodeError:
+                continue
+            if value and not any(char in value for char in "\n\r\x00"):
+                path = Path(os.path.expanduser(os.path.expandvars(value)))
+                if path.is_absolute() and path.is_dir():
+                    yield path
+                    break
+
+
+def _detect_db_dirs_windows():
+    roots = [*_windows_config_roots(), _windows_documents_dir(), Path.home() / "Documents"]
     seen = set()
     candidates = []
-    for root in data_roots:
-        pattern = os.path.join(root, "xwechat_files", "*", "db_storage")
-        for match in glob_mod.glob(pattern):
-            normalized = os.path.normcase(os.path.normpath(match))
-            if os.path.isdir(match) and normalized not in seen:
+    for root in roots:
+        if root.name.casefold() == "db_storage":
+            matches = [root]
+        else:
+            base = root if root.name.casefold() == "xwechat_files" else root / "xwechat_files"
+            matches = sorted(base.glob("*/db_storage"))
+        for match in matches:
+            normalized = os.path.normcase(os.path.realpath(match))
+            if match.is_dir() and normalized not in seen:
                 seen.add(normalized)
-                candidates.append(match)
-    return _choose_candidate(candidates)
+                candidates.append(str(match))
+    return candidates
 
 
-def _auto_detect_db_dir_linux():
+def _detect_db_dirs_linux():
     seen = set()
     candidates = []
     search_roots = [os.path.expanduser("~/Documents/xwechat_files")]
@@ -117,13 +139,13 @@ def _auto_detect_db_dir_linux():
         except OSError:
             return 0
     candidates.sort(key=_mtime, reverse=True)
-    return _choose_candidate(candidates)
+    return candidates
 
 
-def _auto_detect_db_dir_macos():
+def _detect_db_dirs_macos():
     base = os.path.expanduser("~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files")
     if not os.path.isdir(base):
-        return None
+        return []
     seen = set()
     candidates = []
     pattern = os.path.join(base, "*", "db_storage")
@@ -132,61 +154,71 @@ def _auto_detect_db_dir_macos():
         if os.path.isdir(match) and normalized not in seen:
             seen.add(normalized)
             candidates.append(match)
-    return _choose_candidate(candidates)
+    return candidates
+
+
+def detect_db_dirs():
+    if _SYSTEM == "windows":
+        return _detect_db_dirs_windows()
+    if _SYSTEM == "linux":
+        return _detect_db_dirs_linux()
+    if _SYSTEM == "darwin":
+        return _detect_db_dirs_macos()
+    return []
 
 
 def auto_detect_db_dir():
-    if _SYSTEM == "windows":
-        return _auto_detect_db_dir_windows()
-    if _SYSTEM == "linux":
-        return _auto_detect_db_dir_linux()
-    if _SYSTEM == "darwin":
-        return _auto_detect_db_dir_macos()
-    return None
+    return _choose_candidate(detect_db_dirs())
 
 
-def load_config(config_path=None):
-    """加载配置。默认从 ~/.wechat-cli/config.json 读取。"""
-    if config_path is None:
-        config_path = CONFIG_FILE
+def read_config_file(config_path):
+    try:
+        with open(config_path, encoding="utf-8") as file:
+            cfg = json.load(file)
+    except FileNotFoundError:
+        return {}
+    if not isinstance(cfg, dict):
+        raise ValueError("配置文件必须包含 JSON 对象")
+    return cfg
 
-    cfg = {}
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                cfg = json.load(f)
-        except json.JSONDecodeError:
-            cfg = {}
 
-    # db_dir 缺失时，自动检测
-    db_dir = cfg.get("db_dir", "")
-    if not db_dir:
-        detected = auto_detect_db_dir()
-        if detected:
-            cfg["db_dir"] = detected
-        else:
-            raise FileNotFoundError(
-                "未找到微信数据目录。\n"
-                "请运行: wechat-cli init"
-            )
-
-    # 设置默认值
+def resolve_config_paths(cfg, config_path):
+    cfg = dict(cfg)
     state_dir = os.path.dirname(os.path.abspath(config_path))
     cfg.setdefault("keys_file", os.path.join(state_dir, "all_keys.json"))
     cfg.setdefault("decrypted_dir", os.path.join(state_dir, "decrypted"))
     cfg.setdefault("decoded_image_dir", os.path.join(state_dir, "decoded_images"))
     cfg.setdefault("wechat_process", _DEFAULT_PROCESS)
 
-    # 所有路径确保为绝对路径
     for key in ("db_dir", "keys_file", "decrypted_dir", "decoded_image_dir"):
-        if key in cfg and not os.path.isabs(cfg[key]):
-            cfg[key] = os.path.join(state_dir, cfg[key])
+        if key in cfg:
+            if key == "db_dir" and not cfg[key]:
+                continue
+            path = os.path.expanduser(cfg[key])
+            cfg[key] = os.path.abspath(os.path.join(state_dir, path))
 
-    # 推导微信数据根目录
     db_dir = cfg.get("db_dir", "")
     if db_dir and os.path.basename(db_dir) == "db_storage":
         cfg["wechat_base_dir"] = os.path.dirname(db_dir)
     else:
         cfg["wechat_base_dir"] = db_dir
-
     return cfg
+
+
+def load_config(config_path=None):
+    """加载配置。默认从 ~/.wechat-cli/ 读取。"""
+    config_path = config_path or CONFIG_FILE
+    try:
+        cfg = read_config_file(config_path)
+    except json.JSONDecodeError:
+        cfg = {}
+
+    if not cfg.get("db_dir"):
+        detected = auto_detect_db_dir()
+        if not detected:
+            raise FileNotFoundError(
+                "未找到微信数据目录。\n"
+                "请运行: wechat-cli doctor"
+            )
+        cfg["db_dir"] = detected
+    return resolve_config_paths(cfg, config_path)

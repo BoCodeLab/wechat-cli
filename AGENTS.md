@@ -17,8 +17,10 @@
 常用命令速查：
 
 ```bash
+wechat-cli doctor --format json           # 检查本地配置和数据目录
 wechat-cli sessions --limit 10            # 最近会话
 wechat-cli history "名字" --limit 20       # 聊天记录
+wechat-cli history "名字" --structured    # 结构化消息对象
 wechat-cli history "群名" --limit 50 --format text  # 纯文本聊天记录
 wechat-cli search "关键词" --chat "群名"    # 在指定聊天里搜消息
 wechat-cli contacts --query "名字"         # 搜联系人
@@ -26,7 +28,8 @@ wechat-cli members "群名"                  # 群成员
 wechat-cli stats "群名" --format text      # 聊天统计
 wechat-cli favorites --query "关键词"      # 收藏
 wechat-cli unread                          # 未读会话
-wechat-cli new-messages                    # 增量新消息
+wechat-cli new-messages --cursor agent     # 使用独立游标读取新增消息
+wechat-cli export "名字" --format jsonl    # 逐条输出消息对象
 ```
 
 默认输出 JSON，直接解析；需要人类可读时加 `--format text`。

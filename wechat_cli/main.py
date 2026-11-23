@@ -4,13 +4,12 @@ import sys
 
 import click
 
+from . import __version__
 from .core.context import AppContext
-
-_VERSION = "0.2.4"
 
 
 @click.group()
-@click.version_option(version=_VERSION, prog_name="wechat-cli")
+@click.version_option(version=__version__, prog_name="wechat-cli")
 @click.option("--config", "config_path", default=None, envvar="WECHAT_CLI_CONFIG",
               help="config.json 路径（默认自动查找）")
 @click.pass_context
@@ -19,6 +18,7 @@ def cli(ctx, config_path):
 
     \b
     使用示例:
+      wechat-cli doctor                              # 检查本地配置
       wechat-cli init                                # 首次使用：提取密钥
       wechat-cli sessions                            # 最近会话列表
       wechat-cli sessions --limit 10                 # 最近 10 个会话
@@ -29,8 +29,8 @@ def cli(ctx, config_path):
       wechat-cli contacts --query "李"              # 搜索联系人
       wechat-cli new-messages                       # 获取增量新消息
     """
-    # init/version 命令不需要 AppContext
-    if ctx.invoked_subcommand in ("init", "version"):
+    # 配置和诊断命令在初始化前也可运行。
+    if ctx.invoked_subcommand in ("init", "doctor"):
         return
 
     try:
@@ -45,6 +45,7 @@ def cli(ctx, config_path):
 
 # 注册子命令
 from .commands.init import init
+from .commands.doctor import doctor
 from .commands.sessions import sessions
 from .commands.history import history
 from .commands.search import search
@@ -57,6 +58,7 @@ from .commands.unread import unread
 from .commands.favorites import favorites
 
 cli.add_command(init)
+cli.add_command(doctor)
 cli.add_command(sessions)
 cli.add_command(history)
 cli.add_command(search)
