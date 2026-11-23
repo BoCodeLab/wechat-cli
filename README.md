@@ -1,34 +1,12 @@
-<div align="center">
-
 # WeChat CLI
 
-**Query your local WeChat data from the command line.**
+[简体中文](README_CN.md) · [Apache 2.0](LICENSE)
 
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/BoCodeLab/wechat-cli)
+Search and export your local desktop WeChat history from the command line. Look up conversations, contacts, group members, favorites, and unread sessions. Queries read the local databases and return JSON by default for scripts and AI agents.
 
-Chat history · Contacts · Sessions · Favorites · Statistics · Export
+## Install from source
 
-[中文文档](README_CN.md)
-
-</div>
-
----
-
-## ✨ Highlights
-
-- **🚀 Source installation** — use Python and Git on Windows, macOS, and Linux
-- **📦 12 commands** — sessions, history, search, contacts, members, stats, export, favorites, unread, new-messages, init, doctor
-- **🤖 AI-first** — JSON output by default, designed for LLM agent tool calls
-- **🔒 Fully local** — on-the-fly SQLCipher decryption, data never leaves your machine
-- **📊 Rich analytics** — top senders, message type breakdown, 24-hour activity charts
-- **📝 Flexible export** — Markdown, plain text, or streaming JSONL with time range filtering
-
----
-
-## 📥 Installation
-
-Install from the `BoCodeLab/wechat-cli` checkout with Python 3.10 or later and Git. The public PyPI name `wechat-cli` currently points to a different project.
+You need Git and Python 3.10 or later.
 
 ```bash
 git clone https://github.com/BoCodeLab/wechat-cli.git
@@ -37,326 +15,102 @@ python -m pip install .
 wechat-cli --version
 ```
 
-If you already have the repository, run the last two commands from its root. On macOS or Linux, use `python3` if that is the name of your Python executable. If your shell cannot find `wechat-cli`, activate your Python environment or run `python -m wechat_cli.main --version`.
+`python -m pip install .` builds the CLI from this checkout. Use `python3` if that is your Python command. If your shell cannot find `wechat-cli`, activate the environment where you installed it or run `python -m wechat_cli.main --version` in that environment.
 
----
+## Initialize and list recent conversations
 
-## 🚀 Quick Start
-
-### Step 1 — Initialize
-
-Run `wechat-cli doctor --format text` to see the available data directories and configuration status. On Windows, directory detection checks WeChat's saved paths and the user's Documents folder, including redirected Documents. If multiple accounts appear, specify the chosen `db_storage` with `wechat-cli init --db-dir PATH`.
-
-Make sure WeChat is running, then:
+Open the desktop WeChat client and sign in before initializing.
 
 ```bash
-# macOS/Linux: may need sudo for memory scanning
-sudo wechat-cli init
-
-# Windows: run in a terminal with sufficient privileges
+wechat-cli doctor --format text
 wechat-cli init
+wechat-cli sessions --limit 5 --format text
 ```
 
-This auto-detects your WeChat data directory, extracts encryption keys, and saves config to `~/.wechat-cli/`.
+`doctor` works before initialization. It lists candidate data directories and checks the configuration, session database, and key file. The `sessions` command then verifies that the CLI can read the database.
 
-![init-claude-code-1](image/init-claude-code-1.png)
-
-On macOS, you'll need to run the `sudo` command and enter your password:
-
-![init-claude-code-2](image/init-claude-code-2.png)
-
-If you have multiple WeChat accounts logged in locally, you'll be prompted to choose one. Select the account you're currently using (the default is the first one):
-
-![init-claude-code-3](image/init-claude-code-3.png)
-
-If you're unsure which WeChat account is currently active, navigate to the data folder and sort by modification date to find out:
-
-![init-claude-code-4](image/init-claude-code-4.png)
-
-#### macOS: Grant Full Disk Access to Terminal
-
-Before running `init`, make sure your terminal app has **Full Disk Access**:
-
-1. Open **System Settings → Privacy & Security → Full Disk Access**
-2. Add your terminal app (e.g. Terminal, iTerm2, or the terminal in your IDE)
-3. Restart the terminal after enabling
-
-Without this permission, the tool cannot access WeChat's data directory and key extraction will fail.
-
-#### macOS: `task_for_pid failed` Error
-
-On some macOS systems, `init` may fail with `task_for_pid failed` even when running with `sudo`. This is due to macOS security restrictions on process memory access.
-
-**WeChat CLI will automatically attempt to fix this** by re-signing WeChat with the required entitlement (original entitlements are preserved). Just follow the on-screen instructions:
-
-1. The tool will re-sign WeChat automatically
-2. Quit WeChat completely (not just minimize)
-3. Reopen WeChat and log in
-4. Run `sudo wechat-cli init` again
-
-If auto re-signing fails, you can do it manually:
+If multiple accounts are listed or automatic detection misses your data, pass the path to the `db_storage` folder that contains `session/session.db`.
 
 ```bash
-# Quit WeChat first, then:
-sudo codesign --force --sign - --entitlements /dev/stdin /Applications/WeChat.app <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>com.apple.security.get-task-allow</key>
-    <true/>
-</dict>
-</plist>
-EOF
+wechat-cli init --db-dir "PATH/TO/db_storage"
 ```
 
-> **Heads up:** Re-signing WeChat is safe and will **not** cause account issues or bans. However, it may affect WeChat's auto-update mechanism. If you notice any feature not working properly, or want to update WeChat to the latest version, simply re-download and reinstall WeChat from the [official website](https://mac.weixin.qq.com/) — no need to re-run `init`, your existing config and keys will continue to work.
+| Platform | Setup notes |
+| --- | --- |
+| Windows | Detection checks WeChat's saved paths and your Documents folder, including redirected Documents. |
+| macOS | The package includes an Apple Silicon helper. Intel Macs require an x86_64 helper. The existing compatibility notes list macOS 26.3.1 or later and WeChat for Mac 4.1.8.100 or earlier. |
+| Linux | The CLI supports local desktop WeChat data. Use `--db-dir` for custom storage locations. |
 
-### Step 2 — Use It
+Initialization depends on your local WeChat version and system permissions. On macOS, initialization may attempt to re-sign the local WeChat application.
+
+## Command reference
+
+Replace the example names with a contact or group from your own session list. You can also pass the `username` returned by `sessions`.
+
+| Task | Command |
+| --- | --- |
+| Diagnose a local setup | `wechat-cli doctor --format json` |
+| Initialize access to local data | `wechat-cli init` |
+| List recent or unread conversations | `wechat-cli sessions --limit 10` or `wechat-cli unread` |
+| Read a conversation | `wechat-cli history "Alice" --limit 20 --format text` |
+| Search messages | `wechat-cli search "deadline" --chat "Project Team"` |
+| Find or inspect a contact | `wechat-cli contacts --query "Alice"` or `wechat-cli contacts --detail "Alice"` |
+| List group members | `wechat-cli members "Project Team"` |
+| View activity and sender statistics | `wechat-cli stats "Project Team" --format text` |
+| Search favorites | `wechat-cli favorites --type article --query "guide"` |
+| Export a conversation | `wechat-cli export "Alice" --format markdown --output alice.md` |
+| Read newly arrived messages | `wechat-cli new-messages --cursor daily-report` |
+
+`history` and `search` support `--limit`, `--offset`, and message type filtering. Use `--chat` more than once to search several conversations. Omit it for global search. `search` matches both plain and compressed message text and returns up to 500 results per call.
+
+`history`, `search`, `stats`, and `export` accept `--start-time` and `--end-time` in your local timezone. A date-only end time includes that entire day.
 
 ```bash
-wechat-cli sessions                        # Recent chats
-wechat-cli history "Alice" --limit 20      # Chat messages
-wechat-cli search "deadline" --chat "Team" # Search messages
+wechat-cli search "report" --type file --start-time "2026-04-01" --end-time "2026-04-03"
 ```
 
----
+The message types for `history` and `search` are `text`, `image`, `voice`, `video`, `sticker`, `location`, `link`, `file`, `call`, and `system`. Run `wechat-cli --help` to see all commands.
 
-## 🤖 Using with AI Agents
-
-WeChat CLI query commands output JSON by default. Use `history --structured` for individual message fields or `export --format jsonl` for a stream of message objects.
-
-### Claude Code
-
-Add to your project's `CLAUDE.md`:
-
-```markdown
-## WeChat CLI
-
-You can use `wechat-cli` to query my local WeChat data.
-
-Common commands:
-- `wechat-cli sessions --limit 10` — list recent chats
-- `wechat-cli history "NAME" --limit 20 --format text` — read chat history
-- `wechat-cli search "KEYWORD" --chat "CHAT_NAME"` — search messages
-- `wechat-cli contacts --query "NAME"` — search contacts
-- `wechat-cli unread` — show unread sessions
-- `wechat-cli new-messages` — get messages since last check
-- `wechat-cli members "GROUP"` — list group members
-- `wechat-cli stats "CHAT" --format text` — chat statistics
-```
-
-Then in conversation you can ask Claude things like:
-- "Check my unread WeChat messages"
-- "Search for messages about the project deadline in the Team group"
-- "Who sent the most messages in the AI group this week?"
-
-### OpenClaw / MCP Integration
-
-WeChat CLI works with any AI tool that can execute shell commands:
+## Structured output and export
 
 ```bash
-# Get recent conversations
-wechat-cli sessions --limit 5
-
-# Read specific chat
-wechat-cli history "Alice" --limit 30 --format text
-
-# Search with filters
-wechat-cli search "report" --type file --limit 10
-
-# Monitor for new messages (great for cron/automation)
-wechat-cli new-messages --format text
+wechat-cli history "Alice" --limit 20 --structured
+wechat-cli export "Alice" --limit 1000 --format jsonl --output alice.jsonl
 ```
 
----
+`history --structured` returns one object per message. Each object includes a `message_id` scoped to its source database, a Unix `timestamp` in seconds, `sender`, numeric `type` and `subtype`, a display label `msg_type`, and `text`.
 
-## 📖 Command Reference
+Add `--media` to `history` to try resolving local media paths.
 
-### `sessions` — Recent Chats
+JSONL writes the same fields as UTF-8, one message per line, newest first. Use `--output` to write a file or omit it to stream to stdout. Markdown and plain text (`txt`) are also available for exports intended for readers.
+
+## Incremental reads and agents
+
+Call `new-messages` with the same `--cursor` name on each run. The first call returns unread conversation summaries and records a baseline. Later calls return individual new messages, including messages that share a timestamp. Separate names let different consumers keep their own progress.
+
+The CLI stores cursors in `~/.wechat-cli/message-cursors.sqlite3`. When the default cursor migrates from an older `last_check.json`, it reads the last recorded second once again to capture messages that share that timestamp.
+
+For an agent integration, point the agent to [AGENTS.md](AGENTS.md) or the bundled [wechat-cli skill](.agents/skills/wechat-cli/SKILL.md). Use the installed CLI for queries and preserve message IDs when passing records between tools.
+
+## Local files
+
+| Location | Contents |
+| --- | --- |
+| Your WeChat `db_storage` | Source databases. Queries use them as read-only inputs. |
+| `~/.wechat-cli/` | Default configuration, database key file, and incremental cursors. |
+| `wechat_cli_cache` under the system temporary directory | Cached decrypted database snapshots. |
+| Path passed to `--output` | Files you explicitly export. |
+
+For a separate query configuration, put `--config` before the command, for example `wechat-cli --config ./config.json doctor --format text`.
+
+## Development
 
 ```bash
-wechat-cli sessions                        # Last 20 sessions
-wechat-cli sessions --limit 10             # Last 10
-wechat-cli sessions --format text          # Human-readable
+python -m unittest discover -s tests -v
 ```
 
-### `history` — Chat Messages
+## License and acknowledgements
 
-```bash
-wechat-cli history "Alice"                 # Last 50 messages
-wechat-cli history "Alice" --limit 100 --offset 50
-wechat-cli history "Team" --start-time "2026-04-01" --end-time "2026-04-03"
-wechat-cli history "Alice" --type link     # Only links
-wechat-cli history "Alice" --format text
-wechat-cli history "Alice" --structured   # Structured message objects
-```
+[Apache License 2.0](LICENSE). Use the CLI with local data you are authorized to access.
 
-With `--structured`, each message has a stable `message_id` within the source database, a Unix `timestamp` in seconds, `sender`, numeric `type` and `subtype`, a display label `msg_type`, and `text`. Default JSON keeps the formatted message strings.
-
-**Options:** `--limit`, `--offset`, `--start-time`, `--end-time`, `--type`, `--format`
-
-### `search` — Search Messages
-
-```bash
-wechat-cli search "hello"                  # Global search
-wechat-cli search "hello" --chat "Alice"   # In specific chat
-wechat-cli search "meeting" --chat "TeamA" --chat "TeamB"  # Multiple chats
-wechat-cli search "report" --type file     # Only files
-```
-
-**Options:** `--chat` (repeatable), `--start-time`, `--end-time`, `--limit`, `--offset`, `--type`, `--format`
-
-### `contacts` — Contact Search & Details
-
-```bash
-wechat-cli contacts --query "Li"           # Search contacts
-wechat-cli contacts --detail "Alice"       # Contact details
-wechat-cli contacts --detail "wxid_xxx"    # By WeChat ID
-```
-
-Returns: nickname, remark, WeChat ID, bio, avatar URL, account type.
-
-### `members` — Group Members
-
-```bash
-wechat-cli members "Team Group"            # All members (JSON)
-wechat-cli members "Team Group" --format text
-```
-
-### `stats` — Chat Statistics
-
-```bash
-wechat-cli stats "Team Group"
-wechat-cli stats "Alice" --start-time "2026-04-01" --end-time "2026-04-03"
-wechat-cli stats "Team Group" --format text
-```
-
-Returns: total messages, type breakdown, top 10 senders, 24-hour activity distribution.
-
-### `export` — Export Conversations
-
-```bash
-wechat-cli export "Alice" --format markdown              # To stdout
-wechat-cli export "Alice" --format txt --output chat.txt  # To file
-wechat-cli export "Alice" --format jsonl --output chat.jsonl
-wechat-cli export "Team" --start-time "2026-04-01" --limit 1000
-```
-
-JSONL streams UTF-8 message objects with the same fields as `history --structured`, one per line and newest first. Use `--limit` and the time filters to select the messages. With `--output`, the destination is published after a successful read.
-
-**Options:** `--format markdown|txt`, `--output`, `--start-time`, `--end-time`, `--limit`
-
-### `favorites` — WeChat Bookmarks
-
-```bash
-wechat-cli favorites                       # Recent bookmarks
-wechat-cli favorites --type article        # Articles only
-wechat-cli favorites --query "machine learning"  # Search
-```
-
-**Types:** text, image, article, card, video
-
-### `unread` — Unread Sessions
-
-```bash
-wechat-cli unread                          # All unread sessions
-wechat-cli unread --limit 10 --format text
-```
-
-### `new-messages` — Incremental New Messages
-
-```bash
-wechat-cli new-messages                    # First call: unread summaries and a baseline
-wechat-cli new-messages                    # Subsequent calls: individual new messages
-wechat-cli new-messages --cursor daily-report
-```
-
-`--cursor NAME` keeps independent progress for each consumer and account in `~/.wechat-cli/message-cursors.sqlite3`. For an existing default `last_check.json`, migration includes the last saved second once so messages sharing that timestamp can be recovered.
-
-### `doctor` — Local Diagnostics
-
-```bash
-wechat-cli doctor --format json
-wechat-cli --config path/to/config.json doctor --format text
-```
-
-`doctor` reports configuration, candidate data directories, the session database, and key file readiness. `ready` refers to the local configuration and file checks.
-
----
-
-## 🔍 Message Type Filter
-
-The `--type` option (on `history` and `search`):
-
-| Value | Description |
-|-------|-------------|
-| `text` | Text messages |
-| `image` | Images |
-| `voice` | Voice messages |
-| `video` | Videos |
-| `sticker` | Stickers/emojis |
-| `location` | Location shares |
-| `link` | Links and app messages |
-| `file` | File attachments |
-| `call` | Voice/video calls |
-| `system` | System messages |
-
----
-
-## 💻 System Requirements
-
-- **macOS** ≥ 26.3.1
-- **WeChat for Mac** ≤ 4.1.8.100
-
-> Older macOS versions or newer WeChat versions may not be compatible.
-
----
-
-## 🖥️ Platform Support
-
-| Platform | Status | Notes |
-|----------|--------|-------|
-| macOS (Apple Silicon) | ✅ Supported | Bundled arm64 binary |
-| macOS (Intel) | ✅ Supported | x86_64 binary needed |
-| Windows | ✅ Supported | Reads Weixin.exe process memory |
-| Linux | ✅ Supported | Reads /proc/pid/mem, requires root |
-
----
-
-## 🔧 How It Works
-
-WeChat stores chat data in SQLCipher-encrypted SQLite databases locally. WeChat CLI:
-
-1. **Extracts keys** — scans WeChat process memory for encryption keys (`init`)
-2. **Decrypts on-the-fly** — transparent page-level AES-256-CBC decryption with caching
-3. **Queries locally** — all data stays on your machine, no network access
-
----
-
-## 📄 License
-
-[Apache License 2.0](LICENSE)
-
----
-
-## ⚖️ Disclaimer
-
-This project is a local data query tool for personal use only. Please note:
-
-- **Read-only** — this tool only reads locally stored data, it does not send, modify, or delete any messages
-- **No cloud transmission** — all data stays on your local machine, nothing is uploaded to any server
-- **No WeChat ecosystem disruption** — this tool does not interfere with WeChat's normal operation, does not automate any actions, and does not violate WeChat's Terms of Service
-- **Use at your own risk** — this project is for personal learning and research purposes only. Users are responsible for ensuring compliance with local laws and regulations
-
----
-
-## 🙏 Acknowledgements
-
-This project is built on top of [wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt), which provides the core WeChat database decryption and data parsing capabilities.
-
----
-
-## ⭐ Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=BoCodeLab/wechat-cli&type=Date)](https://star-history.com/#BoCodeLab/wechat-cli&Date)
+This project builds on [wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt), which provides the core WeChat database decryption and data parsing capabilities.

@@ -1,34 +1,12 @@
-<div align="center">
-
 # WeChat CLI
 
-**命令行查询本地微信数据，专为 AI 集成设计。**
+[English](README.md) · [Apache 2.0](LICENSE)
 
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/BoCodeLab/wechat-cli)
+在终端查询和导出电脑版微信的本地聊天记录。支持会话、联系人、群成员、收藏、未读和聊天统计。查询以本地数据库为只读输入，默认输出 JSON，方便脚本和 AI Agent 调用。
 
-聊天记录 · 联系人 · 会话 · 收藏 · 统计 · 导出
+## 从源码安装
 
-[English](README.md)
-
-</div>
-
----
-
-## ✨ 功能亮点
-
-- **🚀 从源码安装** — Windows、macOS 和 Linux 均可通过 Python 和 Git 安装
-- **📦 12 个命令** — sessions、history、search、contacts、members、stats、export、favorites、unread、new-messages、init、doctor
-- **🤖 AI 优先** — 默认 JSON 输出，专为 LLM Agent 工具调用设计
-- **🔒 全程本地** — SQLCipher 即时解密，数据不出本机
-- **📊 丰富统计** — 发言排行、消息类型分布、24 小时活跃图
-- **📝 灵活导出** — 支持 Markdown、纯文本和流式 JSONL，可按时间范围筛选
-
----
-
-## 📥 安装
-
-用 Git 获取 `BoCodeLab/wechat-cli` 源码，并用 Python 3.10 或更高版本安装。公共 PyPI 上的 `wechat-cli` 同名包属于另一个项目。
+需要 Git 和 Python 3.10 或更高版本。
 
 ```bash
 git clone https://github.com/BoCodeLab/wechat-cli.git
@@ -37,320 +15,102 @@ python -m pip install .
 wechat-cli --version
 ```
 
-已有本地仓库时，在仓库根目录执行后两条命令即可。在 macOS 或 Linux 上，若 Python 命令名为 `python3`，请用 `python3` 替换 `python`。如果终端找不到 `wechat-cli`，请激活安装时使用的 Python 环境，或运行 `python -m wechat_cli.main --version` 验证安装。
+`python -m pip install .` 直接从当前仓库构建。如果你的 Python 命令是 `python3`，请替换上面的 `python`。如果终端找不到 `wechat-cli`，请激活安装时使用的 Python 环境，或在该环境中运行 `python -m wechat_cli.main --version`。
 
-## 🚀 快速开始
+## 初始化并读取最近会话
 
-### 第一步 — 初始化
-
-运行 `wechat-cli doctor --format text` 查看候选数据目录和配置状态。Windows 会检查微信保存的路径和用户的「文档」目录，包括重定向后的「文档」。如果检测到多个账号，请选定账号后用 `wechat-cli init --db-dir 路径` 指定它的 `db_storage`。
-
-确保微信正在运行，然后：
+先打开并登录电脑版微信，再初始化并验证读取。
 
 ```bash
-# macOS/Linux: 可能需要 sudo 权限
-sudo wechat-cli init
-
-# Windows: 在有足够权限的终端中运行
+wechat-cli doctor --format text
 wechat-cli init
+wechat-cli sessions --limit 5 --format text
 ```
 
-这一步会自动检测微信数据目录、提取加密密钥，并保存到 `~/.wechat-cli/`。
+`doctor` 在初始化前也能运行，会列出候选数据目录，并检查配置、会话数据库和密钥文件。最后用 `sessions` 确认能读取会话。
 
-![init-claude-code-1](image/init-claude-code-1.png)
-
-如果是 mac，需要执行 sudo 命令，然后需要输入密码：
-
-![init-claude-code-code-2](image/init-claude-code-2.png)
-
-特别注意，如果你本地有登录微信多个账号，会有多份数据需要你做选择，选择你当前登录的微信账号（默认是第一个）：
-
-![init-claude-code-3](image/init-claude-code-3.png)
-
-这里不确定自己现在的登录微信号，可以找到该文件夹，然后按照修改时间排序，你就可以看到了。（）
-
-![init-claude-code-4](image/init-claude-code-4.png)
-
-#### macOS：提前开启终端的完全磁盘访问权限
-
-在执行 `init` 之前，请确保已为终端开启**完全磁盘访问权限**：
-
-1. 打开 **系统设置 → 隐私与安全性 → 完全磁盘访问权限**
-2. 添加你使用的终端应用（如 Terminal、iTerm2 或 IDE 内置终端）
-3. 开启后重启终端
-
-未开启此权限会导致工具无法访问微信数据目录，密钥提取将失败。
-
-#### macOS 遇到 `task_for_pid failed` 错误？
-
-在某些 macOS 系统上，即使使用了 `sudo`，`init` 也可能报 `task_for_pid failed`。这是 macOS 的安全策略限制了进程内存访问。
-
-**WeChat CLI 会自动尝试修复此问题**——对微信重新签名以获取必要权限（会保留微信原有权限）。按提示操作即可：
-
-1. 工具会自动对微信重新签名
-2. 完全退出微信（不是最小化）
-3. 重新打开微信并登录
-4. 再次执行 `sudo wechat-cli init`
-
-如果自动签名失败，可以手动执行：
+如果检测到多个账号，或自动检测找不到你的数据，请选择包含 `session/session.db` 的 `db_storage` 目录，并在初始化时指定。
 
 ```bash
-# 先退出微信，然后：
-sudo codesign --force --sign - --entitlements /dev/stdin /Applications/WeChat.app <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>com.apple.security.get-task-allow</key>
-    <true/>
-</dict>
-</plist>
-EOF
+wechat-cli init --db-dir "你的数据目录/db_storage"
 ```
 
-> **温馨提示：** 重新签名是安全的，**不会**导致封号或账号异常。但可能影响微信的部分功能或自动更新。如果发现任何功能异常（如搜一搜无法使用），或想更新到微信最新版，直接从[微信官网](https://mac.weixin.qq.com/)重新下载安装即可，**无需重新执行 init**，已有的配置和密钥不受影响。
+| 平台 | 初始化说明 |
+| --- | --- |
+| Windows | 检查微信保存的路径和用户的「文档」目录，也支持重定向的「文档」。 |
+| macOS | 随包提供 Apple Silicon 辅助程序，Intel Mac 需 x86_64 版本。现有兼容性说明列出 macOS 26.3.1 或更高版本，以及微信 Mac 版 4.1.8.100 或更早版本。 |
+| Linux | 支持桌面微信的本地数据。使用自定义存储位置时，可通过 `--db-dir` 指定目录。 |
 
-### 第二步 — 开始使用
+初始化受本机微信版本和系统权限影响。macOS 上的初始化可能尝试重新签名本机的微信应用。
+
+## 命令速查
+
+将示例中的名字替换为你自己的联系人或群名，也可以直接使用 `sessions` 返回的 `username`。
+
+| 用途 | 命令 |
+| --- | --- |
+| 检查配置和本机数据目录 | `wechat-cli doctor --format json` |
+| 初始化本地数据访问 | `wechat-cli init` |
+| 查看最近会话或未读会话 | `wechat-cli sessions --limit 10` 或 `wechat-cli unread` |
+| 读取指定聊天 | `wechat-cli history "张三" --limit 20 --format text` |
+| 搜索消息 | `wechat-cli search "截止日期" --chat "项目群"` |
+| 搜索联系人或查看详情 | `wechat-cli contacts --query "张三"` 或 `wechat-cli contacts --detail "张三"` |
+| 查看群成员 | `wechat-cli members "项目群"` |
+| 查看活跃时段和发言统计 | `wechat-cli stats "项目群" --format text` |
+| 搜索收藏 | `wechat-cli favorites --type article --query "使用指南"` |
+| 导出聊天记录 | `wechat-cli export "张三" --format markdown --output chat.md` |
+| 逐条读取新消息 | `wechat-cli new-messages --cursor daily-report` |
+
+`history` 和 `search` 支持 `--limit`、`--offset` 与消息类型筛选。给 `search` 传入多个 `--chat` 可搜索多个会话，省略则全局搜索。普通文本和压缩消息都可以匹配，每次搜索最多返回 500 条。
+
+`history`、`search`、`stats` 和 `export` 都支持以本地时区表示的 `--start-time` 和 `--end-time`。结束时间只写日期时，包含该日全天。
 
 ```bash
-wechat-cli sessions                        # 最近会话
-wechat-cli history "张三" --limit 20       # 聊天记录
-wechat-cli search "截止日期" --chat "项目组" # 搜索消息
+wechat-cli search "报告" --type file --start-time "2026-04-01" --end-time "2026-04-03"
 ```
 
----
+`history` 和 `search` 的消息类型包括 `text`、`image`、`voice`、`video`、`sticker`、`location`、`link`、`file`、`call` 和 `system`。运行 `wechat-cli --help` 可查看全部命令。
 
-## 🤖 AI 工具集成
-
-查询命令默认输出 JSON。用 `history --structured` 获取单条消息的字段，或用 `export --format jsonl` 逐条读取消息对象。
-
-### Claude Code
-
-在项目的 `CLAUDE.md` 中添加：
-
-```markdown
-## WeChat CLI
-
-你可以使用 `wechat-cli` 查询我的本地微信数据。
-
-常用命令：
-- `wechat-cli sessions --limit 10` — 列出最近会话
-- `wechat-cli history "名称" --limit 20 --format text` — 读取聊天记录
-- `wechat-cli search "关键词" --chat "聊天名"` — 搜索消息
-- `wechat-cli contacts --query "名称"` — 搜索联系人
-- `wechat-cli unread` — 显示未读会话
-- `wechat-cli new-messages` — 获取上次以来的新消息
-- `wechat-cli members "群名"` — 列出群成员
-- `wechat-cli stats "聊天名" --format text` — 聊天统计
-```
-
-然后在对话中可以直接问 Claude：
-- "帮我看看微信有没有未读消息"
-- "在项目群里搜索关于截止日期的消息"
-- "看看这周 AI 群里谁发言最多？"
-
-### OpenClaw / MCP 集成
-
-WeChat CLI 兼容任何能执行 shell 命令的 AI 工具：
+## 结构化消息与导出
 
 ```bash
-# 获取最近会话
-wechat-cli sessions --limit 5
-
-# 读取指定聊天
-wechat-cli history "张三" --limit 30 --format text
-
-# 带过滤条件搜索
-wechat-cli search "报告" --type file --limit 10
-
-# 监控新消息（适合定时任务）
-wechat-cli new-messages --format text
+wechat-cli history "张三" --limit 20 --structured
+wechat-cli export "张三" --limit 1000 --format jsonl --output chat.jsonl
 ```
 
----
+`history --structured` 每条消息返回一个对象，包含来源数据库内的 `message_id`、Unix 秒级 `timestamp`、发送者 `sender`、数字类型 `type` 和 `subtype`、类型名称 `msg_type` 及正文 `text`。
 
-## 📖 命令一览
+给 `history` 加上 `--media` 可尝试解析本地媒体路径。
 
-### `sessions` — 最近会话
+JSONL 使用相同字段和 UTF-8 编码，每行一条，最新消息在前。指定 `--output` 可写入文件，省略则写入标准输出。面向阅读的导出也支持 Markdown 和纯文本（`txt`）。
+
+## 增量读取与 Agent 集成
+
+每次调用 `new-messages` 时使用同一个 `--cursor` 名称。首次返回未读会话摘要并建立游标，后续逐条返回新消息，同一秒收到的消息也能分别读取。不同调用方可以使用各自的名称维护独立进度。
+
+游标保存在 `~/.wechat-cli/message-cursors.sqlite3`。默认游标从旧的 `last_check.json` 迁移时会重读最后一秒，以补回同秒消息。
+
+接入 Agent 时，可以让它参考 [AGENTS.md](AGENTS.md) 或仓库自带的 [wechat-cli 技能](.agents/skills/wechat-cli/SKILL.md)。使用已安装的 CLI 查询，在工具间传递消息时保留 `message_id`。
+
+## 本地文件
+
+| 位置 | 内容 |
+| --- | --- |
+| 微信的 `db_storage` | 原始数据库，查询时作为只读输入。 |
+| `~/.wechat-cli/` | 默认配置、数据库密钥文件和增量游标。 |
+| 系统临时目录下的 `wechat_cli_cache` | 解密后的数据库缓存。 |
+| `--output` 指定的位置 | 用户主动导出的文件。 |
+
+如需使用单独的查询配置，请把 `--config` 放在子命令之前，例如 `wechat-cli --config ./config.json doctor --format text`。
+
+## 开发测试
 
 ```bash
-wechat-cli sessions                        # 最近 20 个会话
-wechat-cli sessions --limit 10             # 最近 10 个
-wechat-cli sessions --format text          # 纯文本输出
+python -m unittest discover -s tests -v
 ```
 
-### `history` — 聊天记录
+## 许可证与致谢
 
-```bash
-wechat-cli history "张三"                  # 最近 50 条消息
-wechat-cli history "张三" --limit 100 --offset 50
-wechat-cli history "交流群" --start-time "2026-04-01" --end-time "2026-04-03"
-wechat-cli history "张三" --type link      # 只看链接
-wechat-cli history "张三" --format text
-wechat-cli history "张三" --structured     # 结构化消息对象
-```
-
-使用 `--structured` 时，每条消息都有来源库内稳定的 `message_id`、Unix 秒级 `timestamp`、`sender`、数字类型 `type` 和 `subtype`、类型名称 `msg_type` 及正文 `text`。默认 JSON 仍输出格式化的消息字符串。
-
-### `search` — 搜索消息
-
-```bash
-wechat-cli search "Claude"                 # 全局搜索
-wechat-cli search "Claude" --chat "交流群"  # 指定聊天搜索
-wechat-cli search "开会" --chat "群A" --chat "群B"  # 多个聊天
-wechat-cli search "报告" --type file        # 只搜文件
-```
-
-**选项：** `--chat`（可多次指定）、`--start-time`、`--end-time`、`--limit`、`--offset`、`--type`、`--format`
-
-### `contacts` — 联系人搜索与详情
-
-```bash
-wechat-cli contacts --query "李"           # 搜索联系人
-wechat-cli contacts --detail "张三"        # 查看详情
-wechat-cli contacts --detail "wxid_xxx"    # 通过 wxid 查看
-```
-
-详情包括：昵称、备注、微信号、个性签名、头像 URL、账号类型。
-
-### `members` — 群成员列表
-
-```bash
-wechat-cli members "AI交流群"              # 成员列表
-wechat-cli members "AI交流群" --format text
-```
-
-### `stats` — 聊天统计
-
-```bash
-wechat-cli stats "AI交流群"
-wechat-cli stats "张三" --start-time "2026-04-01" --end-time "2026-04-03"
-wechat-cli stats "AI交流群" --format text
-```
-
-返回：消息总数、类型分布、发言 Top 10、24 小时活跃分布。
-
-### `export` — 导出聊天记录
-
-```bash
-wechat-cli export "张三" --format markdown              # 输出到 stdout
-wechat-cli export "张三" --format txt --output chat.txt  # 输出到文件
-wechat-cli export "张三" --format jsonl --output chat.jsonl
-wechat-cli export "群聊" --start-time "2026-04-01" --limit 1000
-```
-
-JSONL 按最新消息在前的顺序逐条写出 UTF-8 消息对象，字段与 `history --structured` 一致。可用 `--limit` 和时间范围筛选。指定 `--output` 时，读取成功后才写入最终路径。
-
-### `favorites` — 微信收藏
-
-```bash
-wechat-cli favorites                       # 最近收藏
-wechat-cli favorites --type article        # 只看文章
-wechat-cli favorites --query "计算机网络"    # 搜索收藏
-```
-
-**类型：** text、image、article、card、video
-
-### `unread` — 未读会话
-
-```bash
-wechat-cli unread                          # 所有未读会话
-wechat-cli unread --limit 10 --format text
-```
-
-### `new-messages` — 增量新消息
-
-```bash
-wechat-cli new-messages                    # 首次返回未读摘要并建立游标
-wechat-cli new-messages                    # 后续逐条返回新增消息
-wechat-cli new-messages --cursor daily-report
-```
-
-各账号和调用方可用 `--cursor 名称` 在 `~/.wechat-cli/message-cursors.sqlite3` 中维护独立进度。默认游标从旧版 `last_check.json` 迁移时会重新读一次记录的最后一秒，以补回同秒消息。
-
-### `doctor` — 本地诊断
-
-```bash
-wechat-cli doctor --format json
-wechat-cli --config path/to/config.json doctor --format text
-```
-
-`doctor` 在初始化前也可运行，报告配置、候选数据目录、会话库和密钥文件状态。`ready` 表示本地配置和文件检查通过。
-
----
-
-## 🔍 消息类型过滤
-
-`--type` 选项（适用于 `history` 和 `search`）：
-
-| 值 | 说明 |
-|---|------|
-| `text` | 文本消息 |
-| `image` | 图片 |
-| `voice` | 语音 |
-| `video` | 视频 |
-| `sticker` | 表情 |
-| `location` | 位置 |
-| `link` | 链接/应用消息 |
-| `file` | 文件 |
-| `call` | 音视频通话 |
-| `system` | 系统消息 |
-
----
-
-## 💻 系统要求
-
-- **macOS** ≥ 26.3.1
-- **微信 Mac 版** ≤ 4.1.8.100
-
-> macOS 老版本或更新的微信版本可能不兼容。
-
----
-
-## 🖥️ 平台支持
-
-| 平台 | 状态 | 说明 |
-|------|------|------|
-| macOS (Apple Silicon) | ✅ 支持 | 内置 arm64 二进制 |
-| macOS (Intel) | ✅ 支持 | 需要 x86_64 二进制 |
-| Windows | ✅ 支持 | 读取 Weixin.exe 进程内存 |
-| Linux | ✅ 支持 | 读取 /proc/pid/mem，需要 root |
-
----
-
-## 🔧 工作原理
-
-微信将聊天数据存储在本地的 SQLCipher 加密 SQLite 数据库中。WeChat CLI：
-
-1. **提取密钥** — 扫描微信进程内存获取加密密钥（`init`）
-2. **即时解密** — 透明页级 AES-256-CBC 解密，带缓存
-3. **本地查询** — 所有数据留在本机，无需网络访问
-
----
-
-## 📄 开源协议
-
-[Apache License 2.0](LICENSE)
-
----
-
-## ⚖️ 免责声明
-
-本项目为个人使用的本地数据查询工具，请注意：
-
-- **只读不写** — 本工具仅读取本地存储的数据，不会发送、修改或删除任何消息
-- **数据不出本机** — 所有数据仅在你本机处理，不会上传至任何云端服务器
-- **不破坏微信生态** — 本工具不会干扰微信正常运行，不会自动化任何操作，不违反微信使用协议
-- **风险自担** — 本项目仅供个人学习研究使用，使用者需确保遵守当地法律法规
-
----
-
-## 🙏 致谢
+项目采用 [Apache License 2.0](LICENSE)。请在获授权的本地数据上使用。
 
 本项目基于 [wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt) 开发，该仓库提供了微信数据库解密和数据解析的核心能力。
-
----
-
-## ⭐ Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=BoCodeLab/wechat-cli&type=Date)](https://star-history.com/#BoCodeLab/wechat-cli&Date)
