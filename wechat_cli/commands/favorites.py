@@ -51,6 +51,18 @@ def _parse_fav_content(content, fav_type):
     return desc if desc else '[收藏]'
 
 
+def _parse_fav_url(content):
+    """从收藏的 XML 里取出原文链接；没有则返回空字符串。"""
+    if not content:
+        return ''
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError:
+        return ''
+    link = root.find('.//link')
+    return (link.text or '').strip() if link is not None else ''
+
+
 @click.command("favorites")
 @click.option("--limit", default=20, help="返回数量")
 @click.option("--type", "fav_type", default=None,
@@ -118,6 +130,7 @@ def favorites(ctx, limit, fav_type, query, fmt):
             'type': _FAV_TYPE_MAP.get(typ, f'type={typ}'),
             'time': datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M'),
             'summary': summary,
+            'url': _parse_fav_url(content),
             'from': from_display,
             'source_chat': chat_display,
         })
@@ -134,6 +147,8 @@ def favorites(ctx, limit, fav_type, query, fmt):
         lines = []
         for r in results:
             entry = f"[{r['time']}] [{r['type']}] {r['summary']}"
+            if r['url']:
+                entry += f"\n  链接: {r['url']}"
             if r['from']:
                 entry += f"\n  来自: {r['from']}"
             if r['source_chat']:

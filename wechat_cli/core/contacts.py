@@ -56,17 +56,43 @@ def get_contact_full(cache, decrypted_dir):
     return _contact_full or []
 
 
-def resolve_username(chat_name, cache, decrypted_dir):
+class AmbiguousUsernameError(ValueError):
+    """一个名称匹配到多个联系人或群聊。"""
+
+    def __init__(self, query, candidates):
+        self.query = query
+        self.candidates = candidates
+        names = '、'.join(item['display_name'] for item in candidates[:5])
+        super().__init__(f"{query} 匹配到多个聊天对象: {names}")
+
+
+def resolve_username(chat_name, cache, decrypted_dir, *, strict=False):
     names = get_contact_names(cache, decrypted_dir)
     if chat_name in names or chat_name.startswith('wxid_') or '@chatroom' in chat_name:
         return chat_name
     chat_lower = chat_name.lower()
-    for uname, display in names.items():
-        if chat_lower == display.lower():
-            return uname
-    for uname, display in names.items():
-        if chat_lower in display.lower():
-            return uname
+
+    def candidates_for(matches):
+        return sorted(
+            ({'username': username, 'display_name': names.get(username, username)} for username in matches),
+            key=lambda item: item['display_name'],
+        )
+
+    exact = [username for username, display in names.items() if display.lower() == chat_lower]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        if strict:
+            raise AmbiguousUsernameError(chat_name, candidates_for(exact))
+        return exact[0]
+
+    partial = [username for username, display in names.items() if chat_lower in display.lower()]
+    if len(partial) == 1:
+        return partial[0]
+    if len(partial) > 1:
+        if strict:
+            raise AmbiguousUsernameError(chat_name, candidates_for(partial))
+        return partial[0]
     return None
 
 
@@ -328,3 +354,12 @@ def get_group_nickname(chatroom_username, member_username, cache, decrypted_dir)
     if not chatroom_username or not member_username:
         return ''
     return get_group_nickname_map(chatroom_username, cache, decrypted_dir).get(member_username, '')
+
+
+def reset_contact_cache():
+    """清空进程内联系人缓存，供测试和长驻进程在数据变化后重载。"""
+    global _contact_names, _contact_full, _self_username
+    _contact_names = None
+    _contact_full = None
+    _self_username = None
+    _group_nicknames.clear()

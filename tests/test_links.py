@@ -1,5 +1,6 @@
 import unittest
 
+from wechat_cli.commands.favorites import _parse_fav_url
 from wechat_cli.core.messages import _extract_app_message_url
 
 
@@ -25,3 +26,17 @@ class LinkUrlTests(unittest.TestCase):
         )
         self.assertEqual(_extract_app_message_url(xml, is_group=True), 'https://example.com/group')
         self.assertEqual(_extract_app_message_url(xml, is_group=False), '')
+
+
+class FavoriteUrlTests(unittest.TestCase):
+    def test_extracts_article_link_from_favorite_xml(self):
+        xml = (
+            '<favitem type="5"><source>'
+            '<link>https://example.com/a?x=1&amp;y=2</link>'
+            '</source></favitem>'
+        )
+        self.assertEqual(_parse_fav_url(xml), 'https://example.com/a?x=1&y=2')
+
+    def test_returns_empty_without_link_or_on_invalid_xml(self):
+        self.assertEqual(_parse_fav_url('<favitem><desc>文本</desc></favitem>'), '')
+        self.assertEqual(_parse_fav_url('not xml'), '')

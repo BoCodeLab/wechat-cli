@@ -22,7 +22,7 @@ from ..core.attachments import (
     parse_image_metadata,
     parse_packed_basename,
 )
-from ..core.contacts import get_contact_names
+from ..core.contacts import AmbiguousUsernameError, get_contact_names
 from ..core.messages import (
     _build_message_record,
     _is_safe_msg_table_name,
@@ -33,6 +33,7 @@ from ..core.messages import (
     validate_pagination,
 )
 from ..output.formatter import output
+from .common import exit_ambiguous
 
 
 def _human_size(size):
@@ -57,65 +58,86 @@ def _table_ctx(chat_ctx, table):
     }
 
 
-def _collect_attachments(app, chat_ctx, names, limit, offset):
+def _attachment_item(app, chat_ctx, table_ctx, row, names, id_to_username):
+    content = decompress_content(row[4], row[5])
+    if isinstance(content, str) and chat_ctx['is_group']:
+        _, content = _parse_message_content(content, row[1], True)
+    basename = parse_packed_basename(row[6])
+    if not basename:
+        return None
+
+    try:
+        record = _build_message_record(
+            row[:6], table_ctx, names, id_to_username, app.display_name_fn,
+            group_nickname_fn=getattr(app, 'group_nickname_fn', None),
+        )
+    except Exception:
+        return None
+
+    files = attachment_files(app.db_dir, chat_ctx['username'], row[2], basename)
+    kind = best_kind(files)
+    if not kind:
+        return None
+    meta = parse_image_metadata(content) if content else {}
+    return {
+        'attachment_id': f"{chat_ctx['username']}|{record['message_id']}|{kind}",
+        'kind': kind,
+        'timestamp': record['timestamp'],
+        'time': datetime.fromtimestamp(record['timestamp']).strftime('%Y-%m-%d %H:%M'),
+        'sender': record['sender'],
+        'sender_username': record['sender_username'],
+        'sender_contact_display': record['sender_contact_display'],
+        'sender_group_nickname': record['sender_group_nickname'],
+        'msg_id': record['message_id'],
+        'size': os.path.getsize(files[kind]),
+        'available_kinds': [k for k in IMAGE_KINDS if files.get(k)],
+        'md5': meta.get('md5', ''),
+    }
+
+
+def _collect_attachments(app, chat_ctx, names, limit, offset=0):
     results = []
     failures = []
+    batch_size = max(limit * 2, 50)
+    wanted = offset + limit
     for table in chat_ctx['message_tables']:
+        table_results = []
+        fetched = 0
+        table_ctx = _table_ctx(chat_ctx, table)
         try:
             conn = sqlite3.connect(table['db_path'])
             try:
                 id_to_username = _load_name2id_maps(conn)
-                rows = conn.execute(
-                    f"SELECT local_id, local_type, create_time, real_sender_id, "
-                    f"message_content, WCDB_CT_message_content, packed_info_data "
-                    f"FROM [{table['table_name']}] "
-                    f"WHERE (local_type & 0xFFFFFFFF) = 3 "
-                    f"ORDER BY create_time DESC, local_id DESC LIMIT ?",
-                    (offset + limit,),
-                ).fetchall()
+                while len(table_results) < wanted:
+                    rows = conn.execute(
+                        f"SELECT local_id, local_type, create_time, real_sender_id, "
+                        f"message_content, WCDB_CT_message_content, packed_info_data "
+                        f"FROM [{table['table_name']}] "
+                        f"WHERE (local_type & 0xFFFFFFFF) = 3 "
+                        f"ORDER BY create_time DESC, local_id DESC LIMIT ? OFFSET ?",
+                        (batch_size, fetched),
+                    ).fetchall()
+                    if not rows:
+                        break
+                    fetched += len(rows)
+                    for row in rows:
+                        try:
+                            item = _attachment_item(app, chat_ctx, table_ctx, row, names, id_to_username)
+                        except Exception as error:
+                            failures.append(f"local_id={row[0]}: {error}")
+                            continue
+                        if item:
+                            table_results.append(item)
+                            if len(table_results) >= wanted:
+                                break
+                    if len(rows) < batch_size:
+                        break
             finally:
                 conn.close()
         except (sqlite3.Error, OSError, ValueError) as error:
             failures.append(f"{table.get('db_key')}: {error}")
             continue
-
-        table_ctx = _table_ctx(chat_ctx, table)
-        for row in rows:
-            content = decompress_content(row[4], row[5])
-            if isinstance(content, str) and chat_ctx['is_group']:
-                _, content = _parse_message_content(content, row[1], True)
-            basename = parse_packed_basename(row[6])
-            if not basename:
-                continue
-
-            try:
-                record = _build_message_record(
-                    row[:6], table_ctx, names, id_to_username, app.display_name_fn,
-                    group_nickname_fn=getattr(app, 'group_nickname_fn', None),
-                )
-            except Exception as error:
-                failures.append(f"local_id={row[0]}: {error}")
-                continue
-
-            files = attachment_files(app.db_dir, chat_ctx['username'], row[2], basename)
-            kind = best_kind(files)
-            if not kind:
-                continue
-            meta = parse_image_metadata(content) if content else {}
-            results.append({
-                'attachment_id': f"{chat_ctx['username']}|{record['message_id']}|{kind}",
-                'kind': kind,
-                'timestamp': record['timestamp'],
-                'time': datetime.fromtimestamp(record['timestamp']).strftime('%Y-%m-%d %H:%M'),
-                'sender': record['sender'],
-                'sender_username': record['sender_username'],
-                'sender_contact_display': record['sender_contact_display'],
-                'sender_group_nickname': record['sender_group_nickname'],
-                'msg_id': record['message_id'],
-                'size': os.path.getsize(files[kind]),
-                'available_kinds': [k for k in IMAGE_KINDS if files.get(k)],
-                'md5': meta.get('md5', ''),
-            })
+        results.extend(table_results)
 
     results.sort(key=lambda item: (item['timestamp'], item['msg_id']), reverse=True)
     return results[offset:offset + limit], failures
@@ -124,7 +146,7 @@ def _collect_attachments(app, chat_ctx, names, limit, offset):
 @click.command('attachments')
 @click.argument('chat_name')
 @click.option('--limit', default=20, help='返回的附件数量')
-@click.option('--structured', is_flag=True, help='返回结构化对象（默认即是）')
+@click.option('--structured', is_flag=True, help='兼容旧参数；始终返回结构化对象')
 @click.option('--format', 'fmt', default='json', type=click.Choice(['json', 'text']), help='输出格式')
 @click.pass_context
 def attachments(ctx, chat_name, limit, structured, fmt):
@@ -142,7 +164,10 @@ def attachments(ctx, chat_name, limit, structured, fmt):
         click.echo(f'错误: {error}', err=True)
         ctx.exit(2)
 
-    chat_ctx = resolve_chat_context(chat_name, app.msg_db_keys, app.cache, app.decrypted_dir)
+    try:
+        chat_ctx = resolve_chat_context(chat_name, app.msg_db_keys, app.cache, app.decrypted_dir)
+    except AmbiguousUsernameError as error:
+        exit_ambiguous(ctx, error)
     if not chat_ctx:
         click.echo(f'找不到聊天对象: {chat_name}', err=True)
         ctx.exit(1)

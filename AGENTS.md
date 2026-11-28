@@ -23,6 +23,8 @@ wechat-cli history "名字" --limit 20       # 聊天记录
 wechat-cli history "名字" --structured    # 结构化消息对象
 wechat-cli history "群名" --limit 50 --format text  # 纯文本聊天记录
 wechat-cli search "关键词" --chat "群名"    # 在指定聊天里搜消息
+wechat-cli search "关键词" --structured    # 结构化搜索结果（含 message_id/url）
+wechat-cli links --start-time "2026-11-20" # 跨会话提取文章链接并按 URL 去重
 wechat-cli contacts --query "名字"         # 搜联系人
 wechat-cli members "群名"                  # 群成员
 wechat-cli stats "群名" --format text      # 聊天统计

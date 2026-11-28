@@ -17,6 +17,8 @@ wechat-cli history "名字" --structured                # 获取结构化消息�
 wechat-cli history "群名" --limit 50 --format text    # 纯文本聊天记录
 wechat-cli search "关键词" --chat "群名"               # 在指定聊天里搜消息
 wechat-cli search "关键词" --limit 20                 # 全局搜索
+wechat-cli search "关键词" --structured               # 结构化结果（含 message_id/url）
+wechat-cli links --start-time "2026-11-20" --limit 20 # 跨会话提取文章链接，按 URL 去重
 wechat-cli contacts --query "名字"                    # 搜索联系人
 wechat-cli contacts --detail "名字"                   # 联系人详情（昵称/备注/微信号/头像）
 wechat-cli members "群名"                             # 群成员列表
@@ -41,6 +43,8 @@ wechat-cli new-messages --cursor agent                # 使用独立游标逐条
 ## 注意
 
 - 默认 JSON 输出，直接解析；需要人类可读时加 `--format text`。
+- 聊天名匹配到多个对象时，命令会报错并列出候选，不会静默选第一个；请改用备注名、群名或 `username`。
+- `search --structured` 的 `text` 是 300 字内的片段，完整内容用 `message_id` 回到 `history` 取。
 - 终端中文乱码是 Windows 控制台 GBK/UTF-8 显示差异，数据本身正确；可设 `PYTHONIOENCODING=utf-8` 或加 `--format text` 缓解。
 - 若提示「未找到微信数据目录」，先用 `wechat-cli doctor` 查看候选目录和初始化状态。
 - `new-messages` 首次返回未读摘要，后续逐条返回新消息。各账号和游标名称的读取进度保存在 `~/.wechat-cli/message-cursors.sqlite3`。

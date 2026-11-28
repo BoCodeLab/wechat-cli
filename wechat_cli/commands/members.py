@@ -2,8 +2,9 @@
 
 import click
 
-from ..core.contacts import get_contact_names, resolve_username, get_group_members
+from ..core.contacts import AmbiguousUsernameError, get_contact_names, resolve_username, get_group_members
 from ..output.formatter import output
+from .common import exit_ambiguous
 
 
 @click.command("members")
@@ -20,7 +21,10 @@ def members(ctx, group_name, fmt):
     """
     app = ctx.obj
 
-    username = resolve_username(group_name, app.cache, app.decrypted_dir)
+    try:
+        username = resolve_username(group_name, app.cache, app.decrypted_dir, strict=True)
+    except AmbiguousUsernameError as error:
+        exit_ambiguous(ctx, error)
     if not username:
         click.echo(f"找不到: {group_name}", err=True)
         ctx.exit(1)
@@ -43,9 +47,12 @@ def members(ctx, group_name, fmt):
             'members': result['members'],
         }, 'json')
     else:
-        lines = [f"{m['display_name']}  ({m['username']})"]
-        if m['remark']:
-            lines[-1] += f"  备注: {m['remark']}"
+        lines = []
+        for member in result['members']:
+            line = f"{member['display_name']}  ({member['username']})"
+            if member['remark']:
+                line += f"  备注: {member['remark']}"
+            lines.append(line)
         header = f"{display_name} 的群成员（共 {len(result['members'])} 人）"
         if result['owner']:
             header += f"，群主: {result['owner']}"

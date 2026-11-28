@@ -54,6 +54,7 @@ Replace the example names with a contact or group from your own session list. Yo
 | List recent or unread conversations | `wechat-cli sessions --limit 10` or `wechat-cli unread` |
 | Read a conversation | `wechat-cli history "Alice" --limit 20 --format text` |
 | Search messages | `wechat-cli search "deadline" --chat "Project Team"` |
+| Extract article links across chats | `wechat-cli links --start-time "2026-11-20" --limit 20` |
 | Find or inspect a contact | `wechat-cli contacts --query "Alice"` or `wechat-cli contacts --detail "Alice"` |
 | List group members | `wechat-cli members "Project Team"` |
 | View activity and sender statistics | `wechat-cli stats "Project Team" --format text` |
@@ -83,6 +84,10 @@ wechat-cli export "Alice" --limit 1000 --format jsonl --output alice.jsonl
 
 `history --structured` returns one object per message. Each object includes a `message_id` scoped to its source database, a Unix `timestamp` in seconds, `sender`, numeric `type` and `subtype`, a display label `msg_type`, and `text`. It also includes stable identity fields: `sender_username` (wxid or alias), `sender_contact_display` (contact display name), and `sender_group_nickname` (group nickname, empty when unavailable). Link messages also carry `url` (official-account articles and web links), empty when unavailable.
 
+`search --structured` returns the same message objects. `text` is a snippet of at most 300 characters; `text_truncated` is `true` when it was cut, and `message_id` lets you fetch the full text with `history`. Without `--structured`, `search` keeps returning the original readable strings.
+
+`favorites` JSON output now includes `url`, so article favorites can be opened directly from the source link.
+
 `history` and `search` JSON output includes a `meta` object for judging completeness:
 
 - `status`: `ok`, `partial` (some queries failed), or `possibly_stale` (a message shard has no key).
@@ -91,9 +96,20 @@ wechat-cli export "Alice" --limit 1000 --format jsonl --output alice.jsonl
 - `generated_at`: query time in Unix seconds.
 - `latest_timestamp` / `latest_time`: the newest message time in the result or chat local data.
 
-Add `--media` to `history` to try resolving local media paths.
+Add `--media` to `history` to try resolving local media paths. Images are matched exactly through `packed_info_data`; voice and video have no stable filename mapping, so the command does not return an arbitrary file from the same month.
 
 JSONL writes the same fields as UTF-8, one message per line, newest first. Use `--output` to write a file or omit it to stream to stdout. Markdown and plain text (`txt`) are also available for exports intended for readers.
+
+## Link extraction
+
+`links` scans all conversations, or only the ones passed with `--chat`, for official-account articles and web links. Each entry includes the title, URL, description, source chat, sender, time, and `message_id`. The same URL is returned once, with `share_count` and `first_shared_time`:
+
+```bash
+wechat-cli links --start-time "2026-11-20" --limit 20
+wechat-cli links --chat "Project Team" --start-time "2026-11-01" --format text
+```
+
+Only appmsg type 5 (links and articles) is included; files, images, and cards without a URL are skipped.
 
 ## Image attachments
 
@@ -135,8 +151,8 @@ For an agent integration, point the agent to [AGENTS.md](AGENTS.md) or the bundl
 | Location | Contents |
 | --- | --- |
 | Your WeChat `db_storage` | Source databases. Queries use them as read-only inputs. |
-| `~/.wechat-cli/` | Default configuration, database key file, and incremental cursors. |
-| `wechat_cli_cache` under the system temporary directory | Cached decrypted database snapshots. |
+| `~/.wechat-cli/` | Default configuration, database key file, incremental cursors, and decrypted cache. |
+| `~/.wechat-cli/cache/` | Cached decrypted database snapshots. Plaintext; keep it readable only by your own account. |
 | Path passed to `--output` | Files you explicitly export. |
 
 For a separate query configuration, put `--config` before the command, for example `wechat-cli --config ./config.json doctor --format text`.

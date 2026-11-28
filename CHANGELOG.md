@@ -2,6 +2,19 @@
 
 更早版本的记录未保留，从 0.2.6 开始记录。
 
+## 0.5.0 - 2026-11-28
+
+- 新增 `links` 命令：跨会话提取公众号文章/网页链接，按 URL 去重，返回标题、URL、摘要、来源会话、发送者、时间、`message_id`、`share_count` 和 `first_shared_time`；支持 `--chat`、`--start-time`、`--end-time`、`--limit`。
+- `search` 新增 `--structured`：返回与 `history --structured` 一致的消息对象，含 `message_id`、发送者身份、`url` 和 `text_truncated`。
+- `favorites` 的 JSON 输出新增 `url`，文章收藏可直接取原文链接；`--format text` 也会显示链接。
+- 修复 `members --format text` 抛出 `NameError`。
+- 修复 `history --media` 图片路径错配：按 `packed_info_data` 精确定位；语音/视频不再返回同月任意文件。
+- 聊天名匹配到多个对象时报错并列出候选，不再静默取第一个。
+- 引用消息和系统消息（撤回等）提取可读文本，不再输出原始 XML。
+- `attachments` 在最近图片缺少本地文件时继续向前扫描，尽量填满 `--limit`。
+- 解密缓存从系统临时目录迁到 `~/.wechat-cli/cache/`，写入改为临时文件加原子替换，避免并发读到半成品、明文长期留在 temp。
+- 新增 14 个回归测试，测试总数 63。
+
 ## 0.4.0 - 2026-11-28
 
 - 新增 `archive` 命令：按会话导出 JSONL，默认按月分段（`--segment day` 可按天），写入 `<output-dir>/chats/<会话>/<起>_<止>.jsonl`。

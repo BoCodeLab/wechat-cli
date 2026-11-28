@@ -2,7 +2,7 @@
 
 import click
 
-from ..core.contacts import get_contact_names
+from ..core.contacts import AmbiguousUsernameError, get_contact_names
 from ..core.meta import build_meta
 from ..core.messages import (
     MSG_TYPE_FILTERS,
@@ -17,6 +17,7 @@ from ..core.messages import (
     _page_ranked_entries,
 )
 from ..output.formatter import output
+from .common import exit_ambiguous
 
 
 @click.command("search")
@@ -27,9 +28,10 @@ from ..output.formatter import output
 @click.option("--limit", default=20, help="返回数量（最大500）")
 @click.option("--offset", default=0, help="分页偏移量")
 @click.option("--format", "fmt", default="json", type=click.Choice(["json", "text"]), help="输出格式")
+@click.option("--structured", is_flag=True, help="JSON 的 results 使用结构化消息对象")
 @click.option("--type", "msg_type", default=None, type=click.Choice(MSG_TYPE_NAMES), help="消息类型过滤")
 @click.pass_context
-def search(ctx, keyword, chat, start_time, end_time, limit, offset, fmt, msg_type):
+def search(ctx, keyword, chat, start_time, end_time, limit, offset, fmt, structured, msg_type):
     """搜索消息内容
 
     \b
@@ -40,6 +42,8 @@ def search(ctx, keyword, chat, start_time, end_time, limit, offset, fmt, msg_typ
       wechat-cli search "你好" --start-time "2026-04-01" --limit 50
     """
     app = ctx.obj
+    if structured and fmt != 'json':
+        raise click.UsageError("--structured 需要 JSON 输出")
 
     try:
         validate_pagination(limit, offset)
@@ -55,7 +59,10 @@ def search(ctx, keyword, chat, start_time, end_time, limit, offset, fmt, msg_typ
 
     if len(chat_names) == 1:
         # 单聊搜索
-        chat_ctx = resolve_chat_context(chat_names[0], app.msg_db_keys, app.cache, app.decrypted_dir)
+        try:
+            chat_ctx = resolve_chat_context(chat_names[0], app.msg_db_keys, app.cache, app.decrypted_dir)
+        except AmbiguousUsernameError as error:
+            exit_ambiguous(ctx, error)
         if not chat_ctx:
             click.echo(f"找不到聊天对象: {chat_names[0]}", err=True)
             ctx.exit(1)
@@ -65,13 +72,17 @@ def search(ctx, keyword, chat, start_time, end_time, limit, offset, fmt, msg_typ
         entries, failures = collect_chat_search(
             chat_ctx, names, keyword, app.display_name_fn,
             start_ts=start_ts, end_ts=end_ts, candidate_limit=candidate_limit,
-            msg_type_filter=type_filter,
+            msg_type_filter=type_filter, structured=structured,
+            group_nickname_fn=getattr(app, 'group_nickname_fn', None),
         )
         scope = chat_ctx['display_name']
 
     elif len(chat_names) > 1:
         # 多聊搜索
-        resolved, unresolved, missing = resolve_chat_contexts(chat_names, app.msg_db_keys, app.cache, app.decrypted_dir)
+        try:
+            resolved, unresolved, missing = resolve_chat_contexts(chat_names, app.msg_db_keys, app.cache, app.decrypted_dir)
+        except AmbiguousUsernameError as error:
+            exit_ambiguous(ctx, error)
         if not resolved:
             click.echo("错误: 没有可查询的聊天对象", err=True)
             ctx.exit(1)
@@ -81,7 +92,8 @@ def search(ctx, keyword, chat, start_time, end_time, limit, offset, fmt, msg_typ
             e, f = collect_chat_search(
                 rc, names, keyword, app.display_name_fn,
                 start_ts=start_ts, end_ts=end_ts, candidate_limit=candidate_limit,
-                msg_type_filter=type_filter,
+                msg_type_filter=type_filter, structured=structured,
+                group_nickname_fn=getattr(app, 'group_nickname_fn', None),
             )
             entries.extend(e)
             failures.extend(f)
@@ -94,7 +106,8 @@ def search(ctx, keyword, chat, start_time, end_time, limit, offset, fmt, msg_typ
         entries, failures = search_all_messages(
             app.msg_db_keys, app.cache, names, keyword, app.display_name_fn,
             start_ts=start_ts, end_ts=end_ts, candidate_limit=candidate_limit,
-            msg_type_filter=type_filter,
+            msg_type_filter=type_filter, structured=structured,
+            group_nickname_fn=getattr(app, 'group_nickname_fn', None),
         )
         scope = "全部消息"
 
@@ -117,6 +130,7 @@ def search(ctx, keyword, chat, start_time, end_time, limit, offset, fmt, msg_typ
             'start_time': start_time or None,
             'end_time': end_time or None,
             'type': msg_type or None,
+            'structured': structured,
             'results': [item[1] for item in paged],
             'failures': failures if failures else None,
             'meta': meta,

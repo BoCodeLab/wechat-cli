@@ -2,7 +2,13 @@
 
 import click
 
-from ..core.contacts import get_contact_full, get_contact_names, resolve_username, get_contact_detail
+from ..core.contacts import (
+    AmbiguousUsernameError,
+    get_contact_full,
+    get_contact_names,
+    resolve_username,
+    get_contact_detail,
+)
 from ..output.formatter import output
 
 
@@ -59,7 +65,13 @@ def _show_detail(app, name_or_id, fmt):
     names = get_contact_names(app.cache, app.decrypted_dir)
 
     # 尝试解析为 username
-    username = resolve_username(name_or_id, app.cache, app.decrypted_dir)
+    try:
+        username = resolve_username(name_or_id, app.cache, app.decrypted_dir, strict=True)
+    except AmbiguousUsernameError as error:
+        click.echo(f"错误: {error}", err=True)
+        for item in error.candidates:
+            click.echo(f"  - {item['display_name']}  ({item['username']})", err=True)
+        raise click.exceptions.Exit(2)
     if not username:
         # 直接用原始输入试试
         username = name_or_id

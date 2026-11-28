@@ -21,6 +21,7 @@ _QUERY_LIMIT_MAX = 500
 _MESSAGE_COLUMNS = (
     "local_id, local_type, create_time, real_sender_id, message_content, WCDB_CT_message_content"
 )
+_MESSAGE_COLUMNS_WITH_PACKED = f"{_MESSAGE_COLUMNS}, packed_info_data"
 
 # 消息类型过滤映射: 名称 -> (base_type,) 或 (base_type, sub_type)
 MSG_TYPE_FILTERS = {
@@ -50,6 +51,13 @@ def find_msg_db_keys(all_keys):
 
 def _is_safe_msg_table_name(table_name):
     return bool(re.fullmatch(r'Msg_[0-9a-f]{32}', table_name))
+
+
+def _table_has_column(conn, table_name, column_name):
+    try:
+        return any(row[1] == column_name for row in conn.execute(f"PRAGMA table_info([{table_name}])"))
+    except sqlite3.Error:
+        return False
 
 
 def _find_msg_tables_for_user(username, msg_db_keys, cache):
@@ -153,24 +161,53 @@ def _parse_int(value, fallback=0):
         return fallback
 
 
+def _plain_text_from_inner_xml(value):
+    """把引用/系统消息里的内嵌 XML 摘要成可读文本，避免把标签带进结果。"""
+    value = (value or '').strip()
+    if not value or not value.startswith('<'):
+        return value
+    root = _parse_xml_root(value)
+    if root is None:
+        return _collapse_text(re.sub(r'<[^>]+>', ' ', value))
+    title = _collapse_text(root.findtext('.//title') or '')
+    description = _collapse_text(root.findtext('.//des') or '')
+    if title and description and description != title:
+        return f"{title} — {description}"
+    if title:
+        return title
+    text = _collapse_text(' '.join(root.itertext()))
+    return text or '[内容]'
+
+
+def _parse_app_message_fields(content, is_group=False):
+    """解析 appmsg 的标题、链接、摘要和类型；不是 appmsg 时返回 None。"""
+    if not content or '<appmsg' not in content:
+        return None
+    if is_group:
+        _, content = _parse_message_content(content, 0, True)
+        if '<appmsg' not in content:
+            return None
+    root = _parse_xml_root(content)
+    if root is None:
+        return None
+    appmsg = root.find('.//appmsg')
+    if appmsg is None:
+        return None
+    return {
+        'title': _collapse_text(appmsg.findtext('title') or ''),
+        'url': (appmsg.findtext('url') or '').strip(),
+        'description': _collapse_text(appmsg.findtext('des') or ''),
+        'app_type': _parse_int((appmsg.findtext('type') or '').strip()),
+    }
+
+
 def _extract_app_message_url(content, is_group=False):
     """从 appmsg 里取出链接地址；没有就返回空字符串。
 
     群消息的原始内容带有 ``发送者:\\n`` 前缀，需先剥离再做 XML 解析。
     """
-    if not content or '<appmsg' not in content:
-        return ''
-    if is_group:
-        _, content = _parse_message_content(content, 0, True)
-        if '<appmsg' not in content:
-            return ''
-    root = _parse_xml_root(content)
-    if root is None:
-        return ''
-    appmsg = root.find('.//appmsg')
-    if appmsg is None:
-        return ''
-    return (appmsg.findtext('url') or '').strip()
+    fields = _parse_app_message_fields(content, is_group)
+    return fields['url'] if fields else ''
 
 
 def _format_app_message_text(content, local_type, is_group, chat_username, chat_display_name, names, _display_name_fn, resolve_media=False, db_dir=None, create_time_ts=0):
@@ -192,7 +229,12 @@ def _format_app_message_text(content, local_type, is_group, chat_username, chat_
         ref_display_name = ''
         if ref is not None:
             ref_display_name = (ref.findtext('displayname') or '').strip()
-            ref_content = _collapse_text(ref.findtext('content') or '')
+            ref_raw = ref.findtext('content')
+            ref_node = ref.find('content')
+            if not ref_raw and ref_node is not None and len(ref_node):
+                ref_raw = ET.tostring(ref_node, encoding='unicode')
+            ref_content = _plain_text_from_inner_xml(ref_raw or '')
+            ref_content = _collapse_text(ref_content)
         if len(ref_content) > 160:
             ref_content = ref_content[:160] + "..."
         quote_text = title or "[引用消息]"
@@ -246,7 +288,37 @@ def _format_voip_message_text(content):
     return f"[通话] {status_map.get(raw_text, raw_text)}"
 
 
-def _resolve_media_path(db_dir, content, local_type, create_time_ts, chat_username=None):
+def _format_system_message_text(content):
+    """把系统消息的 XML 模板转成一句可读文本，不再原样输出标签。"""
+    if not content:
+        return '[系统]'
+    if not content.lstrip().startswith('<'):
+        text = _collapse_text(content)
+        return f"[系统] {text}" if text else '[系统]'
+    root = _parse_xml_root(content)
+    if root is None:
+        text = _collapse_text(re.sub(r'<[^>]+>', ' ', content))
+        return f"[系统] {text}" if text else '[系统]'
+
+    revoke = root.find('.//revokemsg')
+    if revoke is not None:
+        for path in ('replacemsg', 'content'):
+            value = _plain_text_from_inner_xml(revoke.findtext(path) or '')
+            value = _collapse_text(value)
+            if value:
+                return f"[系统] {value}"
+        return '[系统] 撤回了一条消息'
+
+    for path in ('.//content', './/template', './/replacemsg'):
+        value = _plain_text_from_inner_xml(root.findtext(path) or '')
+        value = _collapse_text(value)
+        if value:
+            return f"[系统] {value}"
+    text = _collapse_text(' '.join(root.itertext()))
+    return f"[系统] {text}" if text else '[系统]'
+
+
+def _resolve_media_path(db_dir, content, local_type, create_time_ts, chat_username=None, packed_info=None):
     """尝试解析媒体文件在磁盘上的路径。
 
     Args:
@@ -255,6 +327,7 @@ def _resolve_media_path(db_dir, content, local_type, create_time_ts, chat_userna
         local_type: 消息类型
         create_time_ts: 消息时间戳
         chat_username: 聊天对象 username（用于定位 attach 子目录）
+        packed_info: 图片消息的 packed_info_data，用于精确定位文件名
 
     Returns:
         (path, exists) 元组，path 为 None 表示无法解析
@@ -291,51 +364,25 @@ def _resolve_media_path(db_dir, content, local_type, create_time_ts, chat_userna
                                     return os.path.join(file_dir, f), True
         return None, False
 
-    # 图片消息 (type 3): msg/attach/<hash>/YYYY-MM/Img/*.dat
-    # 视频/语音消息: msg/video/YYYY-MM/ 或 msg/attach/
-    if base_type in (3, 34, 43):
-        # 搜索 attach 目录下对应月份的文件
-        attach_dir = os.path.join(msg_dir, "attach")
-        if not os.path.isdir(attach_dir):
+    # 图片消息 (type 3): 用 packed_info_data 里的文件名精确定位。
+    # 语音/视频没有稳定的文件名映射，返回 None，避免把同月任意文件当成这条消息。
+    if base_type == 3:
+        if not packed_info:
             return None, False
-
-        # 尝试用 chat_username 的 MD5 匹配 attach 子目录
-        target_hash = None
-        if chat_username:
-            h = hashlib.md5(chat_username.encode()).hexdigest()
-            candidate = os.path.join(attach_dir, h)
-            if os.path.isdir(candidate):
-                target_hash = h
-
-        # 限定搜索范围：目标目录或所有目录
-        search_dirs = [target_hash] if target_hash else [
-            d for d in os.listdir(attach_dir)
-            if os.path.isdir(os.path.join(attach_dir, d))
-        ]
-
-        sub_dir_name = "Img" if base_type == 3 else ("Video" if base_type == 43 else "Voice")
-
-        for d in search_dirs:
-            sub = os.path.join(attach_dir, d, date_prefix, sub_dir_name)
-            if os.path.isdir(sub):
-                files = [f for f in os.listdir(sub) if not f.endswith("_h.dat")]
-                if files:
-                    # 返回目录路径（具体是哪个文件无法从 XML 精确匹配）
-                    sample = files[0]
-                    return os.path.join(sub, sample), True
-
-        # 视频：也检查 msg/video/
-        if base_type == 43:
-            video_dir = os.path.join(msg_dir, "video", date_prefix)
-            if os.path.isdir(video_dir):
-                thumbs = [f for f in os.listdir(video_dir) if f.endswith("_thumb.jpg")]
-                if thumbs:
-                    return os.path.join(video_dir, thumbs[0]), True
+        from .attachments import attachment_files, best_kind, parse_packed_basename
+        basename = parse_packed_basename(packed_info)
+        if not basename:
+            return None, False
+        files = attachment_files(db_dir, chat_username, create_time_ts, basename)
+        kind = best_kind(files)
+        if not kind:
+            return None, False
+        return files[kind], True
 
     return None, False
 
 
-def _format_message_text(local_id, local_type, content, is_group, chat_username, chat_display_name, names, display_name_fn, db_dir=None, create_time_ts=0, resolve_media=False):
+def _format_message_text(local_id, local_type, content, is_group, chat_username, chat_display_name, names, display_name_fn, db_dir=None, create_time_ts=0, resolve_media=False, packed_info=None):
     sender, text = _parse_message_content(content, local_type, is_group)
     base_type, _ = _split_msg_type(local_type)
 
@@ -344,7 +391,7 @@ def _format_message_text(local_id, local_type, content, is_group, chat_username,
     if resolve_media and db_dir and content:
         try:
             media_path, media_exists = _resolve_media_path(
-                db_dir, content, local_type, create_time_ts, chat_username
+                db_dir, content, local_type, create_time_ts, chat_username, packed_info=packed_info
             )
         except Exception:
             pass
@@ -354,8 +401,10 @@ def _format_message_text(local_id, local_type, content, is_group, chat_username,
             tag = f"[图片] {media_path}"
             if not media_exists:
                 tag += " (文件不存在)"
+        elif resolve_media:
+            tag = "[图片] (本地文件不可用)"
         else:
-            tag = f"[图片] (local_id={local_id})"
+            tag = "[图片]"
         text = tag
     elif base_type == 47:
         text = "[表情]"
@@ -366,6 +415,8 @@ def _format_message_text(local_id, local_type, content, is_group, chat_username,
             text, local_type, is_group, chat_username, chat_display_name, names, display_name_fn,
             resolve_media=resolve_media, db_dir=db_dir, create_time_ts=create_time_ts
         ) or "[链接/文件]"
+    elif base_type == 10000:
+        text = _format_system_message_text(text)
     elif base_type != 1:
         type_label = format_msg_type(local_type)
         text = f"[{type_label}] {text}" if text else f"[{type_label}]"
@@ -446,7 +497,7 @@ def _build_message_filters(start_ts=None, end_ts=None, keyword='', msg_type_filt
     return clauses, params
 
 
-def _query_messages(conn, table_name, start_ts=None, end_ts=None, keyword='', limit=20, offset=0, msg_type_filter=None, *, stream=False):
+def _query_messages(conn, table_name, start_ts=None, end_ts=None, keyword='', limit=20, offset=0, msg_type_filter=None, *, stream=False, columns=_MESSAGE_COLUMNS):
     if not _is_safe_msg_table_name(table_name):
         raise ValueError(f'非法消息表名: {table_name}')
     if keyword:
@@ -454,7 +505,7 @@ def _query_messages(conn, table_name, start_ts=None, end_ts=None, keyword='', li
     clauses, params = _build_message_filters(start_ts, end_ts, keyword, msg_type_filter)
     where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ''
     sql = f"""
-        SELECT {_MESSAGE_COLUMNS}
+        SELECT {columns}
         FROM [{table_name}]
         {where_sql}
         ORDER BY create_time DESC, local_id DESC
@@ -507,9 +558,9 @@ def validate_pagination(limit, offset=0, limit_max=_QUERY_LIMIT_MAX):
 
 # ---- 聊天上下文 ----
 
-def resolve_chat_context(chat_name, msg_db_keys, cache, decrypted_dir):
+def resolve_chat_context(chat_name, msg_db_keys, cache, decrypted_dir, *, strict=True):
     from .contacts import resolve_username, get_contact_names
-    username = resolve_username(chat_name, cache, decrypted_dir)
+    username = resolve_username(chat_name, cache, decrypted_dir, strict=strict)
     if not username:
         return None
     names = get_contact_names(cache, decrypted_dir)
@@ -556,18 +607,20 @@ def _page_ranked_entries(entries, limit, offset):
 # ---- 构建行 ----
 
 def _message_table_id(ctx):
-    db_key = ctx['db_key'].replace('\\', '/')
+    db_key = ctx.get('db_key') or os.path.basename(ctx.get('db_path') or '')
+    db_key = db_key.replace('\\', '/')
     return f"{db_key}:{ctx['table_name']}"
 
 
 def _build_message_record(row, ctx, names, id_to_username, display_name_fn, resolve_media=False, db_dir=None, group_nickname_fn=None):
-    local_id, local_type, create_time, real_sender_id, content, ct = row
+    local_id, local_type, create_time, real_sender_id, content, ct = row[:6]
+    packed_info = row[6] if len(row) > 6 else None
     content = decompress_content(content, ct)
     if content is None:
         content = '(无法解压)'
     sender, text = _format_message_text(
         local_id, local_type, content, ctx['is_group'], ctx['username'], ctx['display_name'], names, display_name_fn,
-        db_dir=db_dir, create_time_ts=create_time, resolve_media=resolve_media,
+        db_dir=db_dir, create_time_ts=create_time, resolve_media=resolve_media, packed_info=packed_info,
     )
     identity = _resolve_sender_identity(
         real_sender_id, sender, ctx['is_group'], ctx['username'], ctx['display_name'], names, id_to_username, display_name_fn,
@@ -603,38 +656,43 @@ def _format_history_line(record):
     return f"[{time_str}] {sender}{record['text']}"
 
 
-def _build_search_entry(row, ctx, names, id_to_username, display_name_fn, resolve_media=False, db_dir=None):
-    local_id, local_type, create_time, real_sender_id, content, ct = row
-    content = decompress_content(content, ct)
+def _build_search_entry(row, ctx, names, id_to_username, display_name_fn, resolve_media=False, db_dir=None, structured=False, group_nickname_fn=None):
+    content = decompress_content(row[4], row[5])
     if content is None:
         return None
-    sender, text = _format_message_text(
-        local_id, local_type, content, ctx['is_group'], ctx['username'], ctx['display_name'], names, display_name_fn,
-        db_dir=db_dir, create_time_ts=create_time, resolve_media=resolve_media,
+    record = _build_message_record(
+        row, ctx, names, id_to_username, display_name_fn,
+        resolve_media=resolve_media, db_dir=db_dir, group_nickname_fn=group_nickname_fn,
     )
-    if text and len(text) > 300:
-        text = text[:300] + '...'
-    identity = _resolve_sender_identity(
-        real_sender_id, sender, ctx['is_group'], ctx['username'], ctx['display_name'], names, id_to_username, display_name_fn
-    )
-    sender_label = identity['sender']
-    time_str = datetime.fromtimestamp(create_time).strftime('%Y-%m-%d %H:%M')
-    entry = f"[{time_str}] [{ctx['display_name']}]"
-    if sender_label:
-        entry += f" {sender_label}:"
+    text = record['text']
+    truncated = len(text) > 300
+    if truncated:
+        text = text[:300] + ('…' if structured else '...')
+    if structured:
+        record['text'] = text
+        record['text_truncated'] = truncated
+        return record['timestamp'], record
+
+    time_str = datetime.fromtimestamp(record['timestamp']).strftime('%Y-%m-%d %H:%M')
+    entry = f"[{time_str}] [{record['chat']}]"
+    if record['sender']:
+        entry += f" {record['sender']}:"
     entry += f" {text}"
-    return create_time, entry
+    return record['timestamp'], entry
 
 
 # ---- 聊天记录查询 ----
 
-def _iter_history_table(table_ctx, failures, start_ts, end_ts, msg_type_filter):
+def _iter_history_table(table_ctx, failures, start_ts, end_ts, msg_type_filter, resolve_media=False):
     try:
         with closing(sqlite3.connect(table_ctx['db_path'])) as conn:
             id_to_username = _load_name2id_maps(conn)
+            columns = _MESSAGE_COLUMNS
+            if resolve_media and _table_has_column(conn, table_ctx['table_name'], 'packed_info_data'):
+                columns = _MESSAGE_COLUMNS_WITH_PACKED
             for row in _query_messages(
                 conn, table_ctx['table_name'], start_ts=start_ts, end_ts=end_ts,
-                limit=None, msg_type_filter=msg_type_filter, stream=True,
+                limit=None, msg_type_filter=msg_type_filter, stream=True, columns=columns,
             ):
                 if not isinstance(row[2], (int, float)) or not isinstance(row[0], int):
                     failures.append(f"local_id={row[0]}: 无效的消息标识或时间戳")
@@ -650,7 +708,9 @@ def iter_chat_history(ctx, names, display_name_fn, failures, *, start_ts=None, e
     """按时间从新到旧归并消息表，逐条生成消息。"""
     with ExitStack() as stack:
         streams = [
-            stack.enter_context(closing(_iter_history_table(table_ctx, failures, start_ts, end_ts, msg_type_filter)))
+            stack.enter_context(closing(_iter_history_table(
+                table_ctx, failures, start_ts, end_ts, msg_type_filter, resolve_media=resolve_media,
+            )))
             for table_ctx in _iter_table_contexts(ctx)
         ]
         rows = heapq.merge(*streams, reverse=True, key=lambda item: (item[0][2], item[1]['db_key'], item[0][0]))
@@ -681,7 +741,7 @@ def collect_chat_history(ctx, names, display_name_fn, start_ts=None, end_ts=None
 
 # ---- 搜索查询 ----
 
-def _collect_search_entries(conn, contexts, names, keyword, display_name_fn, start_ts=None, end_ts=None, candidate_limit=20, msg_type_filter=None):
+def _collect_search_entries(conn, contexts, names, keyword, display_name_fn, start_ts=None, end_ts=None, candidate_limit=20, msg_type_filter=None, structured=False, group_nickname_fn=None):
     collected = []
     failures = []
     id_to_username = _load_name2id_maps(conn)
@@ -697,7 +757,10 @@ def _collect_search_entries(conn, contexts, names, keyword, display_name_fn, sta
                     break
                 fetch_offset += len(rows)
                 for row in rows:
-                    formatted = _build_search_entry(row, ctx, names, id_to_username, display_name_fn)
+                    formatted = _build_search_entry(
+                        row, ctx, names, id_to_username, display_name_fn,
+                        structured=structured, group_nickname_fn=group_nickname_fn,
+                    )
                     if formatted:
                         collected.append(formatted)
                         if len(collected) - before >= candidate_limit:
@@ -709,7 +772,7 @@ def _collect_search_entries(conn, contexts, names, keyword, display_name_fn, sta
     return collected, failures
 
 
-def collect_chat_search(ctx, names, keyword, display_name_fn, start_ts=None, end_ts=None, candidate_limit=20, msg_type_filter=None):
+def collect_chat_search(ctx, names, keyword, display_name_fn, start_ts=None, end_ts=None, candidate_limit=20, msg_type_filter=None, structured=False, group_nickname_fn=None):
     collected = []
     failures = []
     contexts_by_db = {}
@@ -722,7 +785,8 @@ def collect_chat_search(ctx, names, keyword, display_name_fn, start_ts=None, end
                 db_entries, db_failures = _collect_search_entries(
                     conn, db_contexts, names, keyword, display_name_fn,
                     start_ts=start_ts, end_ts=end_ts, candidate_limit=candidate_limit,
-                    msg_type_filter=msg_type_filter,
+                    msg_type_filter=msg_type_filter, structured=structured,
+                    group_nickname_fn=group_nickname_fn,
                 )
                 collected.extend(db_entries)
                 failures.extend(db_failures)
@@ -731,7 +795,7 @@ def collect_chat_search(ctx, names, keyword, display_name_fn, start_ts=None, end
     return collected, failures
 
 
-def search_all_messages(msg_db_keys, cache, names, keyword, display_name_fn, start_ts=None, end_ts=None, candidate_limit=20, msg_type_filter=None):
+def search_all_messages(msg_db_keys, cache, names, keyword, display_name_fn, start_ts=None, end_ts=None, candidate_limit=20, msg_type_filter=None, structured=False, group_nickname_fn=None):
     collected = []
     failures = []
     for rel_key in msg_db_keys:
@@ -744,7 +808,8 @@ def search_all_messages(msg_db_keys, cache, names, keyword, display_name_fn, sta
                 db_entries, db_failures = _collect_search_entries(
                     conn, contexts, names, keyword, display_name_fn,
                     start_ts=start_ts, end_ts=end_ts, candidate_limit=candidate_limit,
-                    msg_type_filter=msg_type_filter,
+                    msg_type_filter=msg_type_filter, structured=structured,
+                    group_nickname_fn=group_nickname_fn,
                 )
                 collected.extend(db_entries)
                 failures.extend(db_failures)
@@ -774,6 +839,145 @@ def _load_message_table_contexts(conn, db_path, db_key, names, id_to_username=No
             'db_path': db_path, 'db_key': db_key, 'table_name': table_name, 'is_group': '@chatroom' in username,
         })
     return contexts
+
+
+# ---- 链接/文章提取 ----
+
+LINK_APP_TYPE = 5
+
+
+def _link_entry_from_row(row, ctx, names, id_to_username, display_name_fn, group_nickname_fn=None):
+    content = decompress_content(row[4], row[5])
+    fields = _parse_app_message_fields(content, ctx['is_group'])
+    if not fields or fields['app_type'] != LINK_APP_TYPE or not fields['url']:
+        return None
+    record = _build_message_record(
+        row, ctx, names, id_to_username, display_name_fn,
+        group_nickname_fn=group_nickname_fn,
+    )
+    return {
+        'title': fields['title'],
+        'url': fields['url'],
+        'description': fields['description'],
+        'app_type': fields['app_type'],
+        'chat': record['chat'],
+        'username': record['username'],
+        'is_group': record['is_group'],
+        'sender': record['sender'],
+        'sender_username': record['sender_username'],
+        'sender_contact_display': record['sender_contact_display'],
+        'sender_group_nickname': record['sender_group_nickname'],
+        'timestamp': record['timestamp'],
+        'time': datetime.fromtimestamp(record['timestamp']).strftime('%Y-%m-%d %H:%M'),
+        'message_id': record['message_id'],
+    }
+
+
+def _collect_link_entries(conn, contexts, names, display_name_fn, start_ts=None, end_ts=None, group_nickname_fn=None):
+    entries = []
+    failures = []
+    id_to_username = _load_name2id_maps(conn)
+    for ctx in contexts:
+        clauses = ['(local_type & 0xFFFFFFFF) = 49']
+        params = []
+        if start_ts is not None:
+            clauses.append('create_time >= ?')
+            params.append(start_ts)
+        if end_ts is not None:
+            clauses.append('create_time <= ?')
+            params.append(end_ts)
+        sql = (
+            f"SELECT {_MESSAGE_COLUMNS} FROM [{ctx['table_name']}] "
+            f"WHERE {' AND '.join(clauses)} ORDER BY create_time DESC"
+        )
+        try:
+            for row in conn.execute(sql, params):
+                try:
+                    entry = _link_entry_from_row(
+                        row, ctx, names, id_to_username, display_name_fn,
+                        group_nickname_fn=group_nickname_fn,
+                    )
+                except Exception as error:
+                    failures.append(f"{ctx['display_name']}: local_id={row[0]}: {error}")
+                    continue
+                if entry:
+                    entries.append(entry)
+        except (sqlite3.Error, OSError, ValueError) as error:
+            failures.append(f"{ctx['display_name']}: {error}")
+    return entries, failures
+
+
+def collect_chat_links(ctx, names, display_name_fn, start_ts=None, end_ts=None, group_nickname_fn=None):
+    entries = []
+    failures = []
+    contexts_by_db = {}
+    for table_ctx in _iter_table_contexts(ctx):
+        contexts_by_db.setdefault(table_ctx['db_path'], []).append(table_ctx)
+    for db_path, db_contexts in contexts_by_db.items():
+        try:
+            with closing(sqlite3.connect(db_path)) as conn:
+                db_entries, db_failures = _collect_link_entries(
+                    conn, db_contexts, names, display_name_fn,
+                    start_ts=start_ts, end_ts=end_ts, group_nickname_fn=group_nickname_fn,
+                )
+                entries.extend(db_entries)
+                failures.extend(db_failures)
+        except (sqlite3.Error, OSError) as error:
+            failures.extend(f"{tc['display_name']}: {error}" for tc in db_contexts)
+    return entries, failures
+
+
+def collect_all_links(msg_db_keys, cache, names, display_name_fn, start_ts=None, end_ts=None, group_nickname_fn=None):
+    entries = []
+    failures = []
+    for rel_key in msg_db_keys:
+        path = cache.get(rel_key)
+        if not path:
+            continue
+        try:
+            with closing(sqlite3.connect(path)) as conn:
+                contexts = _load_message_table_contexts(conn, path, rel_key, names)
+                db_entries, db_failures = _collect_link_entries(
+                    conn, contexts, names, display_name_fn,
+                    start_ts=start_ts, end_ts=end_ts, group_nickname_fn=group_nickname_fn,
+                )
+                entries.extend(db_entries)
+                failures.extend(db_failures)
+        except (sqlite3.Error, OSError) as error:
+            failures.append(f"{rel_key}: {error}")
+    return entries, failures
+
+
+def merge_link_entries(entries):
+    """按 URL 去重，保留最近一次分享，并记录分享次数和首次分享时间。"""
+    merged = {}
+    for entry in entries:
+        url = entry.get('url') or ''
+        if not url:
+            continue
+        current = merged.get(url)
+        if current is None:
+            item = dict(entry)
+            item['share_count'] = 1
+            item['first_shared_at'] = item['timestamp']
+            item['first_shared_time'] = datetime.fromtimestamp(item['timestamp']).strftime('%Y-%m-%d %H:%M')
+            merged[url] = item
+            continue
+
+        current['share_count'] += 1
+        if entry['timestamp'] < current['first_shared_at']:
+            current['first_shared_at'] = entry['timestamp']
+            current['first_shared_time'] = datetime.fromtimestamp(entry['timestamp']).strftime('%Y-%m-%d %H:%M')
+        if entry['timestamp'] >= current['timestamp']:
+            count = current['share_count']
+            first_shared_at = current['first_shared_at']
+            first_shared_time = current['first_shared_time']
+            latest = dict(entry)
+            latest['share_count'] = count
+            latest['first_shared_at'] = first_shared_at
+            latest['first_shared_time'] = first_shared_time
+            merged[url] = latest
+    return sorted(merged.values(), key=lambda item: item['timestamp'], reverse=True)
 
 
 def collect_new_messages(msg_db_keys, cache, names, display_name_fn, previous, legacy_timestamps=None, group_nickname_fn=None):
@@ -828,7 +1032,7 @@ def collect_new_messages(msg_db_keys, cache, names, display_name_fn, previous, l
 
 # ---- 多聊天上下文解析 ----
 
-def resolve_chat_contexts(chat_names, msg_db_keys, cache, decrypted_dir):
+def resolve_chat_contexts(chat_names, msg_db_keys, cache, decrypted_dir, *, strict=True):
     resolved = []
     unresolved = []
     missing_tables = []
@@ -838,7 +1042,7 @@ def resolve_chat_contexts(chat_names, msg_db_keys, cache, decrypted_dir):
         if not name:
             unresolved.append('(空)')
             continue
-        ctx = resolve_chat_context(name, msg_db_keys, cache, decrypted_dir)
+        ctx = resolve_chat_context(name, msg_db_keys, cache, decrypted_dir, strict=strict)
         if not ctx:
             unresolved.append(name)
             continue

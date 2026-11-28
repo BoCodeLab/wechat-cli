@@ -58,6 +58,7 @@ from .commands.unread import unread
 from .commands.favorites import favorites
 from .commands.attachments import attachments, extract
 from .commands.archive import archive
+from .commands.links import links
 
 cli.add_command(init)
 cli.add_command(doctor)
@@ -74,6 +75,7 @@ cli.add_command(favorites)
 cli.add_command(attachments)
 cli.add_command(extract)
 cli.add_command(archive)
+cli.add_command(links)
 
 
 if __name__ == "__main__":

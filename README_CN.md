@@ -54,6 +54,7 @@ wechat-cli init --db-dir "你的数据目录/db_storage"
 | 查看最近会话或未读会话 | `wechat-cli sessions --limit 10` 或 `wechat-cli unread` |
 | 读取指定聊天 | `wechat-cli history "张三" --limit 20 --format text` |
 | 搜索消息 | `wechat-cli search "截止日期" --chat "项目群"` |
+| 跨会话提取文章链接 | `wechat-cli links --start-time "2026-11-20" --limit 20` |
 | 搜索联系人或查看详情 | `wechat-cli contacts --query "张三"` 或 `wechat-cli contacts --detail "张三"` |
 | 查看群成员 | `wechat-cli members "项目群"` |
 | 查看活跃时段和发言统计 | `wechat-cli stats "项目群" --format text` |
@@ -83,6 +84,10 @@ wechat-cli export "张三" --limit 1000 --format jsonl --output chat.jsonl
 
 `history --structured` 每条消息返回一个对象，包含来源数据库内的 `message_id`、Unix 秒级 `timestamp`、发送者 `sender`、数字类型 `type` 和 `subtype`、类型名称 `msg_type` 及正文 `text`。还会附带稳定身份字段：`sender_username`（wxid/微信号）、`sender_contact_display`（通讯录显示名）和 `sender_group_nickname`（群昵称，解析不到时为空字符串）。链接类消息额外带 `url`（公众号文章、网页链接），解析不到时为空字符串。
 
+`search --structured` 使用同一套消息对象，`text` 是最多 300 字的片段；被截断时 `text_truncated` 为 `true`，可用 `message_id` 回到 `history` 取全文。不传 `--structured` 时仍返回原来的可读字符串。
+
+`favorites` 的 JSON 输出带 `url`，文章收藏可以直接取原文链接。
+
 `history` 和 `search` 的 JSON 输出带 `meta`，用于判断结果是否完整：
 
 - `status`：`ok`、`partial`（有查询失败）或 `possibly_stale`（有消息分片缺少密钥）。
@@ -91,9 +96,20 @@ wechat-cli export "张三" --limit 1000 --format jsonl --output chat.jsonl
 - `generated_at`：查询时间（Unix 秒）。
 - `latest_timestamp` / `latest_time`：本次结果或该聊天在本地数据中的最新消息时间。
 
-给 `history` 加上 `--media` 可尝试解析本地媒体路径。
+给 `history` 加上 `--media` 可尝试解析本地媒体路径。图片按 `packed_info_data` 精确匹配；语音和视频没有稳定文件名映射，解析不到时不会返回同月的任意文件。
 
 JSONL 使用相同字段和 UTF-8 编码，每行一条，最新消息在前。指定 `--output` 可写入文件，省略则写入标准输出。面向阅读的导出也支持 Markdown 和纯文本（`txt`）。
+
+## 链接提取
+
+`links` 扫描所有会话（或 `--chat` 指定的会话）中的公众号文章和网页链接，返回标题、URL、摘要、来源会话、发送者、时间和 `message_id`。同一 URL 只保留最近一次分享，并给出 `share_count` 和 `first_shared_time`：
+
+```bash
+wechat-cli links --start-time "2026-11-20" --limit 20
+wechat-cli links --chat "项目群" --start-time "2026-11-01" --format text
+```
+
+只收 appmsg 类型 5（链接/文章），跳过文件和图片；没有 URL 的卡片不会返回。
 
 ## 图片附件
 
@@ -135,8 +151,8 @@ wechat-cli archive "张三" --output-dir data/wechat --start-time 2026-01-01 --e
 | 位置 | 内容 |
 | --- | --- |
 | 微信的 `db_storage` | 原始数据库，查询时作为只读输入。 |
-| `~/.wechat-cli/` | 默认配置、数据库密钥文件和增量游标。 |
-| 系统临时目录下的 `wechat_cli_cache` | 解密后的数据库缓存。 |
+| `~/.wechat-cli/` | 默认配置、数据库密钥文件、增量游标和解密缓存。 |
+| `~/.wechat-cli/cache/` | 解密后的数据库快照；明文，仅应让本人账户可读。 |
 | `--output` 指定的位置 | 用户主动导出的文件。 |
 
 如需使用单独的查询配置，请把 `--config` 放在子命令之前，例如 `wechat-cli --config ./config.json doctor --format text`。

@@ -2,7 +2,7 @@
 
 import click
 
-from ..core.contacts import get_contact_names
+from ..core.contacts import AmbiguousUsernameError, get_contact_names
 from ..core.meta import build_meta
 from ..core.messages import (
     MSG_TYPE_FILTERS,
@@ -13,6 +13,7 @@ from ..core.messages import (
     validate_pagination,
 )
 from ..output.formatter import output
+from .common import exit_ambiguous
 
 
 @click.command("history")
@@ -47,7 +48,10 @@ def history(ctx, chat_name, limit, offset, start_time, end_time, fmt, structured
         click.echo(f"错误: {e}", err=True)
         ctx.exit(2)
 
-    chat_ctx = resolve_chat_context(chat_name, app.msg_db_keys, app.cache, app.decrypted_dir)
+    try:
+        chat_ctx = resolve_chat_context(chat_name, app.msg_db_keys, app.cache, app.decrypted_dir)
+    except AmbiguousUsernameError as error:
+        exit_ambiguous(ctx, error)
     if not chat_ctx:
         click.echo(f"找不到聊天对象: {chat_name}", err=True)
         ctx.exit(1)
