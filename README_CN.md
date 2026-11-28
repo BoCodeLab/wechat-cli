@@ -108,7 +108,7 @@ wechat-cli extract "wxid_xxx|message/message_0.db:Msg_xxx:42|image" --output ima
 - 明文图片和 legacy 单字节 XOR 不需要密钥。
 - V1（`07 08 56 31 08 07`）使用固定 AES-128-ECB 密钥。
 - V2（`07 08 56 32 08 07`）由 AES 段和单字节 XOR 段组成。账号密钥首次从本机数据派生，缓存在 `~/.wechat-cli/image_key.json`，不会打印或上传。机器无法派生时会明确报 `V2 暂不支持` 并说明原因。
-- `wxgf` 是微信的 HEVC 容器，按原样写出，不做转码。
+- `wxgf` 是微信的 HEVC 容器。PATH 中有 ffmpeg 时，`extract` 会在输出路径以 `.jpg`、`.jpeg` 或 `.png` 结尾时自动转码，也可以用 `--convert jpg`（或 `png`）显式指定；否则按原样写出 `.wxgf` 字节。
 
 ## 增量读取与 Agent 集成
 

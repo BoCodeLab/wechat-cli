@@ -15,7 +15,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import struct
+import subprocess
+import tempfile
 from datetime import datetime
 
 from Crypto.Cipher import AES
@@ -348,6 +351,57 @@ def derive_v2_keys(db_dir):
 def read_attachment_bytes(path):
     with open(path, 'rb') as handle:
         return handle.read()
+
+
+CONVERTIBLE_FORMATS = ('jpg', 'jpeg', 'png')
+
+
+def infer_output_format(output_path, source_format, convert=None):
+    """判断是否需要转码以及目标格式；返回 ``None`` 表示按原格式写出。"""
+    if convert:
+        fmt = convert.lower()
+        return 'jpg' if fmt == 'jpeg' else fmt
+    extension = os.path.splitext(output_path)[1].lower().lstrip('.')
+    if extension in CONVERTIBLE_FORMATS and extension != source_format:
+        return 'jpg' if extension == 'jpeg' else extension
+    return None
+
+
+def convert_image_with_ffmpeg(data, source_format, target_format, timeout=120):
+    """用本机 ffmpeg 把图片转成 jpg/png，返回转换后的字节。"""
+    ffmpeg = shutil.which('ffmpeg')
+    if not ffmpeg:
+        raise AttachmentError('需要 ffmpeg 转码，但 PATH 中找不到 ffmpeg；请安装后重试')
+
+    workdir = tempfile.mkdtemp(prefix='wechat-cli-extract-')
+    try:
+        src_suffix = '.wxgf' if source_format == 'wxgf' else '.' + source_format
+        src_path = os.path.join(workdir, 'input' + src_suffix)
+        out_path = os.path.join(workdir, 'output.' + target_format)
+        with open(src_path, 'wb') as handle:
+            handle.write(data)
+
+        command = [
+            ffmpeg, '-hide_banner', '-loglevel', 'error', '-y',
+            '-i', src_path, '-frames:v', '1',
+        ]
+        if target_format == 'jpg':
+            command.extend(['-q:v', '2'])
+        command.append(out_path)
+        try:
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=timeout, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise AttachmentError(f'ffmpeg 转码失败: {error}') from error
+        if result.returncode != 0 or not os.path.isfile(out_path):
+            detail = (result.stderr or '').strip().splitlines()
+            message = detail[-1] if detail else f'退出码 {result.returncode}'
+            raise AttachmentError(f'ffmpeg 转码失败: {message}')
+        with open(out_path, 'rb') as handle:
+            return handle.read()
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def attachment_metadata(db_dir, chat_username, create_time, basename):

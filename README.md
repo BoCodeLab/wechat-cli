@@ -108,7 +108,7 @@ wechat-cli extract "wxid_xxx|message/message_0.db:Msg_xxx:42|image" --output ima
 - Plain files and legacy single-byte XOR need no key.
 - V1 (`07 08 56 31 08 07`) uses a fixed AES-128-ECB key.
 - V2 (`07 08 56 32 08 07`) combines an AES segment and a single-byte XOR segment. The account key is derived once from local data and cached in `~/.wechat-cli/image_key.json`; it is never printed or uploaded. If a machine cannot derive it, `extract` fails with `V2 暂不支持` and the reason.
-- `wxgf` is WeChat's HEVC container; it is written as-is and not converted.
+- `wxgf` is WeChat's HEVC container. When `ffmpeg` is on PATH, `extract` converts it to jpg or png if the output path ends in `.jpg`, `.jpeg`, or `.png`; use `--convert jpg` (or `png`) to force conversion. Otherwise the `.wxgf` bytes are written as-is.
 
 ## Incremental reads and agents
 

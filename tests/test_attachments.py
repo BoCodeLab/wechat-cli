@@ -1,5 +1,7 @@
+import base64
 import hashlib
 import os
+import shutil
 import struct
 import tempfile
 import unittest
@@ -16,8 +18,10 @@ from wechat_cli.core.attachments import (
     V2_MAGIC,
     attachment_files,
     best_kind,
+    convert_image_with_ffmpeg,
     decode_dat,
     detect_format,
+    infer_output_format,
     parse_packed_basename,
 )
 
@@ -134,6 +138,31 @@ class AttachmentFileTests(unittest.TestCase):
                 attachment_files(db_dir, 'wxid_test', datetime(2026, 11, 20).timestamp(), 'b' * 32),
                 {},
             )
+
+
+class OutputFormatTests(unittest.TestCase):
+    def test_jpg_output_converts_wxgf(self):
+        self.assertEqual(infer_output_format('image.jpg', 'wxgf'), 'jpg')
+
+    def test_same_extension_keeps_raw(self):
+        self.assertIsNone(infer_output_format('image.png', 'png'))
+
+    def test_explicit_convert_wins(self):
+        self.assertEqual(infer_output_format('image.bin', 'png', 'jpeg'), 'jpg')
+
+    def test_unknown_extension_keeps_raw(self):
+        self.assertIsNone(infer_output_format('image.wxgf', 'wxgf'))
+
+
+@unittest.skipUnless(shutil.which('ffmpeg'), 'ffmpeg not installed')
+class FfmpegTests(unittest.TestCase):
+    PNG_1PX = base64.b64decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+    )
+
+    def test_converts_png_to_jpg(self):
+        out = convert_image_with_ffmpeg(self.PNG_1PX, 'png', 'jpg')
+        self.assertTrue(out.startswith(b'\xff\xd8\xff'))
 
 
 if __name__ == '__main__':

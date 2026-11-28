@@ -15,8 +15,10 @@ from ..core.attachments import (
     AttachmentError,
     attachment_files,
     best_kind,
+    convert_image_with_ffmpeg,
     decode_dat,
     derive_v2_keys,
+    infer_output_format,
     parse_image_metadata,
     parse_packed_basename,
 )
@@ -221,14 +223,17 @@ def _decode_for_attachment(app, data):
 @click.command('extract')
 @click.argument('attachment_id')
 @click.option('--output', 'output_path', required=True, help='输出文件路径')
+@click.option('--convert', type=click.Choice(['jpg', 'jpeg', 'png']), default=None,
+              help='用 ffmpeg 转成指定格式；输出路径为 .jpg/.png 时自动转')
 @click.option('--format', 'fmt', default='json', type=click.Choice(['json', 'text']), help='输出格式')
 @click.pass_context
-def extract(ctx, attachment_id, output_path, fmt):
+def extract(ctx, attachment_id, output_path, convert, fmt):
     """解密单个图片附件并写入文件
 
     \b
     示例:
       wechat-cli extract "wxid_xxx|message/message_0.db:Msg_xxx:42|image" --output out.jpg
+      wechat-cli extract "<attachment_id>" --output out.wxgf --convert jpg
     """
     app = ctx.obj
     try:
@@ -249,6 +254,13 @@ def extract(ctx, attachment_id, output_path, fmt):
         with open(path, 'rb') as handle:
             data = handle.read()
         out_bytes, image_format, decoder = _decode_for_attachment(app, data)
+
+        source_format = image_format
+        target_format = infer_output_format(output_path, image_format, convert)
+        if target_format:
+            out_bytes = convert_image_with_ffmpeg(out_bytes, image_format, target_format)
+            image_format = target_format
+            decoder = f'{decoder}+ffmpeg'
     except V2KeyError as error:
         click.echo(f'错误: {error}', err=True)
         ctx.exit(4)
@@ -275,11 +287,16 @@ def extract(ctx, attachment_id, output_path, fmt):
         'size': len(out_bytes),
         'decoder': decoder,
     }
+    if source_format != image_format:
+        result['source_format'] = source_format
     if fmt == 'json':
         output(result, 'json')
     else:
+        format_label = image_format
+        if source_format != image_format:
+            format_label += f'（源 {source_format}）'
         output(
             f"已解密 {kind} -> {output_path}\n"
-            f"格式: {image_format} · 大小: {_human_size(len(out_bytes))} · 解码器: {decoder}",
+            f"格式: {format_label} · 大小: {_human_size(len(out_bytes))} · 解码器: {decoder}",
             'text',
         )

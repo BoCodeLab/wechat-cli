@@ -2,6 +2,12 @@
 
 更早版本的记录未保留，从 0.2.6 开始记录。
 
+## 0.3.1 - 2026-11-28
+
+- `extract` 支持用本机 ffmpeg 转码 `wxgf`：输出路径以 `.jpg` / `.jpeg` / `.png` 结尾时自动转换，也可用 `--convert jpg|png` 显式指定。
+- 找不到 ffmpeg 或转码失败时给出明确错误，不会把 `wxgf` 原样写进 `.jpg`。
+- 新增 5 个测试（输出格式推断 4 个、ffmpeg 转码 1 个；未安装 ffmpeg 时自动跳过）。
+
 ## 0.3.0 - 2026-11-28
 
 - 新增 `attachments` 命令：列出会话中本地可用的图片附件，返回 `attachment_id`、`kind`、`timestamp`、`time`、发送者身份字段和 `msg_id`。
