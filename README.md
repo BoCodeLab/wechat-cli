@@ -61,6 +61,7 @@ Replace the example names with a contact or group from your own session list. Yo
 | List local image attachments | `wechat-cli attachments "Project Team" --limit 10 --structured` |
 | Decrypt one image attachment | `wechat-cli extract "<attachment_id>" --output image.jpg` |
 | Export a conversation | `wechat-cli export "Alice" --format markdown --output alice.md` |
+| Archive a conversation by period | `wechat-cli archive "Project Team" --output-dir data/wechat` |
 | Read newly arrived messages | `wechat-cli new-messages --cursor daily-report` |
 
 `history` and `search` support `--limit`, `--offset`, and message type filtering. Use `--chat` more than once to search several conversations. Omit it for global search. `search` matches both plain and compressed message text and returns up to 500 results per call.
@@ -109,6 +110,17 @@ wechat-cli extract "wxid_xxx|message/message_0.db:Msg_xxx:42|image" --output ima
 - V1 (`07 08 56 31 08 07`) uses a fixed AES-128-ECB key.
 - V2 (`07 08 56 32 08 07`) combines an AES segment and a single-byte XOR segment. The account key is derived once from local data and cached in `~/.wechat-cli/image_key.json`; it is never printed or uploaded. If a machine cannot derive it, `extract` fails with `V2 暂不支持` and the reason.
 - `wxgf` is WeChat's HEVC container. When `ffmpeg` is on PATH, `extract` converts it to jpg or png if the output path ends in `.jpg`, `.jpeg`, or `.png`; use `--convert jpg` (or `png`) to force conversion. Otherwise the `.wxgf` bytes are written as-is.
+
+## Archiving by month
+
+`archive` exports one conversation into monthly (or daily) JSONL files and maintains an index that never stores message text:
+
+```bash
+wechat-cli archive "Project Team" --output-dir data/wechat
+wechat-cli archive "Alice" --output-dir data/wechat --start-time 2026-01-01 --end-time 2026-06-30 --segment day
+```
+
+Files go to `<output-dir>/chats/<chat>/<start>_<end>.jsonl`. The index is `<output-dir>/index/archive-index.jsonl` with `chat`, `username`, `start`, `end`, `count`, `file`, and `exported_at`. Re-running the same range replaces the segment file and updates its index entry.
 
 ## Incremental reads and agents
 

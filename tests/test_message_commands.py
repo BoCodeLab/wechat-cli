@@ -3,6 +3,7 @@ import json
 import sqlite3
 import unittest
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -213,3 +214,24 @@ class MessageCommandsTests(unittest.TestCase):
         good = self.runner.invoke(cli, args)
         self.assertEqual(good.exit_code, 0, good.output or repr(good.exception))
         self.assertEqual([json.loads(line)["text"] for line in target.read_text(encoding="utf-8").splitlines()], ["other shard", "old"])
+
+    def test_archive_writes_segment_and_dedupes_index(self):
+        timestamp = int(datetime(2026, 1, 2, 10, 0).timestamp())
+        with closing(sqlite3.connect(self.shards[FIRST_SHARD])) as conn, conn:
+            conn.execute(f"UPDATE {TABLE} SET create_time = ?", (timestamp,))
+
+        out = self.root / "archive"
+        args = ["archive", USERNAME, "--output-dir", str(out), "--segment", "day"]
+        first = self.runner.invoke(cli, args)
+        self.assertEqual(first.exit_code, 0, first.output or repr(first.exception))
+        payload = json.loads(first.output)
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["segments"][0]["count"], 1)
+        self.assertTrue((out / payload["segments"][0]["file"]).exists())
+
+        index = out / "index" / "archive-index.jsonl"
+        self.assertEqual(len(index.read_text(encoding="utf-8").strip().splitlines()), 1)
+
+        second = self.runner.invoke(cli, args)
+        self.assertEqual(second.exit_code, 0, second.output or repr(second.exception))
+        self.assertEqual(len(index.read_text(encoding="utf-8").strip().splitlines()), 1)

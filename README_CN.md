@@ -61,6 +61,7 @@ wechat-cli init --db-dir "你的数据目录/db_storage"
 | 列出本地图片附件 | `wechat-cli attachments "项目群" --limit 10 --structured` |
 | 解密单个图片附件 | `wechat-cli extract "<attachment_id>" --output image.jpg` |
 | 导出聊天记录 | `wechat-cli export "张三" --format markdown --output chat.md` |
+| 按时间段归档 | `wechat-cli archive "项目群" --output-dir data/wechat` |
 | 逐条读取新消息 | `wechat-cli new-messages --cursor daily-report` |
 
 `history` 和 `search` 支持 `--limit`、`--offset` 与消息类型筛选。给 `search` 传入多个 `--chat` 可搜索多个会话，省略则全局搜索。普通文本和压缩消息都可以匹配，每次搜索最多返回 500 条。
@@ -109,6 +110,17 @@ wechat-cli extract "wxid_xxx|message/message_0.db:Msg_xxx:42|image" --output ima
 - V1（`07 08 56 31 08 07`）使用固定 AES-128-ECB 密钥。
 - V2（`07 08 56 32 08 07`）由 AES 段和单字节 XOR 段组成。账号密钥首次从本机数据派生，缓存在 `~/.wechat-cli/image_key.json`，不会打印或上传。机器无法派生时会明确报 `V2 暂不支持` 并说明原因。
 - `wxgf` 是微信的 HEVC 容器。PATH 中有 ffmpeg 时，`extract` 会在输出路径以 `.jpg`、`.jpeg` 或 `.png` 结尾时自动转码，也可以用 `--convert jpg`（或 `png`）显式指定；否则按原样写出 `.wxgf` 字节。
+
+## 按月归档
+
+`archive` 把一个会话导出成按月的 JSONL 文件（`--segment day` 可按天），并维护不含聊天正文的索引：
+
+```bash
+wechat-cli archive "项目群" --output-dir data/wechat
+wechat-cli archive "张三" --output-dir data/wechat --start-time 2026-01-01 --end-time 2026-06-30 --segment day
+```
+
+文件写入 `<output-dir>/chats/<会话>/<起>_<止>.jsonl`。索引为 `<output-dir>/index/archive-index.jsonl`，字段包括 `chat`、`username`、`start`、`end`、`count`、`file` 和 `exported_at`。同一时间段重跑会覆盖分段文件并更新索引。
 
 ## 增量读取与 Agent 集成
 
