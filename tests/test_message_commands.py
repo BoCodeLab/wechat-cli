@@ -166,10 +166,15 @@ class MessageCommandsTests(unittest.TestCase):
 
         result = self.runner.invoke(cli, ["history", USERNAME, "--limit", "2", "--structured"])
         self.assertEqual(result.exit_code, 0, result.output or repr(result.exception))
-        messages = json.loads(result.output)["messages"]
+        payload = json.loads(result.output)
+        self.assertEqual(payload["meta"]["status"], "ok")
+        messages = payload["messages"]
         self.assertEqual([row["message_id"] for row in messages], [row["message_id"] for row in new["messages"]])
         self.assertEqual([row["timestamp"] for row in messages], [102, 103])
         self.assertEqual(messages[0]["sender"], USERNAME)
+        self.assertEqual(messages[0]["sender_username"], USERNAME)
+        self.assertEqual(messages[0]["sender_contact_display"], USERNAME)
+        self.assertEqual(messages[0]["sender_group_nickname"], "")
         self.assertEqual(messages[0]["type"], 1)
         self.assertEqual(messages[0]["text"], "latest in first shard")
 

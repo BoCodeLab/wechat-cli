@@ -3,6 +3,7 @@
 import click
 
 from ..core.contacts import get_contact_names
+from ..core.meta import build_meta
 from ..core.messages import (
     MSG_TYPE_FILTERS,
     MSG_TYPE_NAMES,
@@ -98,6 +99,13 @@ def search(ctx, keyword, chat, start_time, end_time, limit, offset, fmt, msg_typ
         scope = "全部消息"
 
     paged = _page_ranked_entries(entries, limit, offset)
+    latest_timestamp = max((timestamp for timestamp, _ in paged), default=None)
+    meta = build_meta(
+        getattr(app, 'all_keys', {}) or {},
+        app.db_dir,
+        failures=failures,
+        latest_timestamp=latest_timestamp,
+    )
 
     if fmt == 'json':
         output({
@@ -111,6 +119,7 @@ def search(ctx, keyword, chat, start_time, end_time, limit, offset, fmt, msg_typ
             'type': msg_type or None,
             'results': [item[1] for item in paged],
             'failures': failures if failures else None,
+            'meta': meta,
         }, 'json')
     else:
         if not paged:
@@ -121,4 +130,6 @@ def search(ctx, keyword, chat, start_time, end_time, limit, offset, fmt, msg_typ
             header += f"\n时间范围: {start_time or '最早'} ~ {end_time or '最新'}"
         if failures:
             header += "\n查询失败: " + "；".join(failures)
+        if meta.get('warnings'):
+            header += "\n数据提示: " + "；".join(meta['warnings'])
         output(header + ":\n\n" + "\n\n".join(item[1] for item in paged), 'text')

@@ -110,6 +110,7 @@ def new_messages(ctx, cursor_name, fmt):
             names = get_contact_names(app.cache, app.decrypted_dir)
             messages, checkpoints = collect_new_messages(
                 app.msg_db_keys, app.cache, names, app.display_name_fn, previous, legacy,
+                group_nickname_fn=getattr(app, 'group_nickname_fn', None),
             )
             if first_call:
                 messages = _initial_unread(app, names)

@@ -78,7 +78,15 @@ wechat-cli history "Alice" --limit 20 --structured
 wechat-cli export "Alice" --limit 1000 --format jsonl --output alice.jsonl
 ```
 
-`history --structured` returns one object per message. Each object includes a `message_id` scoped to its source database, a Unix `timestamp` in seconds, `sender`, numeric `type` and `subtype`, a display label `msg_type`, and `text`.
+`history --structured` returns one object per message. Each object includes a `message_id` scoped to its source database, a Unix `timestamp` in seconds, `sender`, numeric `type` and `subtype`, a display label `msg_type`, and `text`. It also includes stable identity fields: `sender_username` (wxid or alias), `sender_contact_display` (contact display name), and `sender_group_nickname` (group nickname, empty when unavailable). Link messages also carry `url` (official-account articles and web links), empty when unavailable.
+
+`history` and `search` JSON output includes a `meta` object for judging completeness:
+
+- `status`: `ok`, `partial` (some queries failed), or `possibly_stale` (a message shard has no key).
+- `missing_shards`: message shards without keys.
+- `warnings`: messages worth showing to the user.
+- `generated_at`: query time in Unix seconds.
+- `latest_timestamp` / `latest_time`: the newest message time in the result or chat local data.
 
 Add `--media` to `history` to try resolving local media paths.
 

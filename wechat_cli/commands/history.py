@@ -3,6 +3,7 @@
 import click
 
 from ..core.contacts import get_contact_names
+from ..core.meta import build_meta
 from ..core.messages import (
     MSG_TYPE_FILTERS,
     MSG_TYPE_NAMES,
@@ -60,6 +61,18 @@ def history(ctx, chat_name, limit, offset, start_time, end_time, fmt, structured
         chat_ctx, names, app.display_name_fn,
         start_ts=start_ts, end_ts=end_ts, limit=limit, offset=offset,
         msg_type_filter=type_filter, resolve_media=media, db_dir=app.db_dir, structured=structured,
+        group_nickname_fn=getattr(app, 'group_nickname_fn', None),
+    )
+
+    latest_timestamp = max(
+        (table.get('max_create_time') or 0 for table in chat_ctx.get('message_tables') or []),
+        default=0,
+    ) or None
+    meta = build_meta(
+        getattr(app, 'all_keys', {}) or {},
+        app.db_dir,
+        failures=failures,
+        latest_timestamp=latest_timestamp,
     )
 
     if fmt == 'json':
@@ -75,6 +88,7 @@ def history(ctx, chat_name, limit, offset, start_time, end_time, fmt, structured
             'type': msg_type or None,
             'messages': messages,
             'failures': failures if failures else None,
+            'meta': meta,
         }, 'json')
     else:
         header = f"{chat_ctx['display_name']} 的消息记录（返回 {len(messages)} 条，offset={offset}, limit={limit}）"
@@ -84,6 +98,8 @@ def history(ctx, chat_name, limit, offset, start_time, end_time, fmt, structured
             header += f"\n时间范围: {start_time or '最早'} ~ {end_time or '最新'}"
         if failures:
             header += "\n查询失败: " + "；".join(failures)
+        if meta.get('warnings'):
+            header += "\n数据提示: " + "；".join(meta['warnings'])
         if messages:
             output(header + ":\n\n" + "\n".join(messages), 'text')
         else:

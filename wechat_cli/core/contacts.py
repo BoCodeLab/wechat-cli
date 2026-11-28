@@ -199,3 +199,132 @@ def display_name_for_username(username, names, db_dir, cache, decrypted_dir):
     if username == get_self_username(db_dir, cache, decrypted_dir):
         return 'me'
     return names.get(username, username)
+
+
+# ---- 群昵称 ----
+
+_group_nicknames = {}  # {room_username: {member_username: nickname}}
+
+
+def _contact_db_path(cache, decrypted_dir):
+    pre_decrypted = os.path.join(decrypted_dir, "contact", "contact.db")
+    if os.path.exists(pre_decrypted):
+        return pre_decrypted
+    return cache.get(os.path.join("contact", "contact.db"))
+
+
+def _read_varint(data, offset):
+    result = 0
+    shift = 0
+    while offset < len(data):
+        byte = data[offset]
+        offset += 1
+        result |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return result, offset
+        shift += 7
+        if shift > 63:
+            raise ValueError("varint too long")
+    raise ValueError("truncated varint")
+
+
+def _read_length_delimited(data, offset):
+    length, offset = _read_varint(data, offset)
+    end = offset + length
+    if end > len(data):
+        raise ValueError("truncated field")
+    return data[offset:end], end
+
+
+def _parse_group_member_entry(chunk):
+    offset = 0
+    username = ''
+    nickname = ''
+    while offset < len(chunk):
+        tag, offset = _read_varint(chunk, offset)
+        field, wire = tag >> 3, tag & 7
+        if wire == 0:
+            _, offset = _read_varint(chunk, offset)
+        elif wire == 2:
+            value, offset = _read_length_delimited(chunk, offset)
+            if field == 1:
+                username = value.decode('utf-8', errors='replace')
+            elif field == 2:
+                nickname = value.decode('utf-8', errors='replace')
+        elif wire == 5:
+            offset += 4
+        elif wire == 1:
+            offset += 8
+        else:
+            return None
+    if not username:
+        return None
+    return username, nickname
+
+
+def _parse_group_members(blob):
+    """解析 chat_room.ext_buffer_ 里的群成员昵称。
+
+    结构是 protobuf 的 repeated 成员条目（字段 1），每条含
+    username（字段 1）和 nickname（字段 2）。解析失败时返回已读到的部分。
+    """
+    if not blob:
+        return {}
+    members = {}
+    offset = 0
+    try:
+        while offset < len(blob):
+            tag, offset = _read_varint(blob, offset)
+            field, wire = tag >> 3, tag & 7
+            if wire == 0:
+                _, offset = _read_varint(blob, offset)
+            elif wire == 2:
+                value, offset = _read_length_delimited(blob, offset)
+                if field == 1:
+                    entry = _parse_group_member_entry(value)
+                    if entry:
+                        members[entry[0]] = entry[1]
+            elif wire == 5:
+                offset += 4
+            elif wire == 1:
+                offset += 8
+            else:
+                break
+    except (ValueError, IndexError):
+        pass
+    return members
+
+
+def get_group_nickname_map(chatroom_username, cache, decrypted_dir):
+    """返回某个群的 {成员 username: 群昵称}，失败时返回空字典。"""
+    if not chatroom_username:
+        return {}
+    if chatroom_username in _group_nicknames:
+        return _group_nicknames[chatroom_username]
+
+    db_path = _contact_db_path(cache, decrypted_dir)
+    if not db_path:
+        _group_nicknames[chatroom_username] = {}
+        return {}
+
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT ext_buffer FROM chat_room WHERE username = ?",
+                (chatroom_username,),
+            ).fetchone()
+        finally:
+            conn.close()
+        members = _parse_group_members(row[0] if row and row[0] else b'')
+    except (sqlite3.Error, OSError, ValueError):
+        members = {}
+
+    _group_nicknames[chatroom_username] = members
+    return members
+
+
+def get_group_nickname(chatroom_username, member_username, cache, decrypted_dir):
+    if not chatroom_username or not member_username:
+        return ''
+    return get_group_nickname_map(chatroom_username, cache, decrypted_dir).get(member_username, '')

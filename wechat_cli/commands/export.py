@@ -59,6 +59,7 @@ def export(ctx, chat_name, fmt, output_path, start_time, end_time, limit):
         failures = []
         with closing(iter_chat_history(
             chat_ctx, names, app.display_name_fn, failures, start_ts=start_ts, end_ts=end_ts,
+            group_nickname_fn=getattr(app, 'group_nickname_fn', None),
         )) as records:
             count = _export_jsonl(islice(records, limit), failures, output_path)
         if not count:
@@ -70,6 +71,7 @@ def export(ctx, chat_name, fmt, output_path, start_time, end_time, limit):
     lines, failures = collect_chat_history(
         chat_ctx, names, app.display_name_fn,
         start_ts=start_ts, end_ts=end_ts, limit=limit, offset=0,
+        group_nickname_fn=getattr(app, 'group_nickname_fn', None),
     )
 
     if not lines:

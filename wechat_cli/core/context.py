@@ -40,3 +40,7 @@ class AppContext:
     def display_name_fn(self, username, names):
         from .contacts import display_name_for_username
         return display_name_for_username(username, names, self.db_dir, self.cache, self.decrypted_dir)
+
+    def group_nickname_fn(self, room_username, member_username):
+        from .contacts import get_group_nickname
+        return get_group_nickname(room_username, member_username, self.cache, self.decrypted_dir)

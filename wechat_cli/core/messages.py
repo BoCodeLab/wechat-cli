@@ -153,6 +153,26 @@ def _parse_int(value, fallback=0):
         return fallback
 
 
+def _extract_app_message_url(content, is_group=False):
+    """从 appmsg 里取出链接地址；没有就返回空字符串。
+
+    群消息的原始内容带有 ``发送者:\\n`` 前缀，需先剥离再做 XML 解析。
+    """
+    if not content or '<appmsg' not in content:
+        return ''
+    if is_group:
+        _, content = _parse_message_content(content, 0, True)
+        if '<appmsg' not in content:
+            return ''
+    root = _parse_xml_root(content)
+    if root is None:
+        return ''
+    appmsg = root.find('.//appmsg')
+    if appmsg is None:
+        return ''
+    return (appmsg.findtext('url') or '').strip()
+
+
 def _format_app_message_text(content, local_type, is_group, chat_username, chat_display_name, names, _display_name_fn, resolve_media=False, db_dir=None, create_time_ts=0):
     if not content or '<appmsg' not in content:
         return None
@@ -369,19 +389,32 @@ def _load_name2id_maps(conn):
 
 # ---- 发送者解析 ----
 
-def _resolve_sender_label(real_sender_id, sender_from_content, is_group, chat_username, chat_display_name, names, id_to_username, display_name_fn):
+def _resolve_sender_identity(real_sender_id, sender_from_content, is_group, chat_username, chat_display_name, names, id_to_username, display_name_fn):
     sender_username = id_to_username.get(real_sender_id, '')
+    if not sender_username and sender_from_content:
+        candidate = sender_from_content.strip()
+        if candidate and len(candidate) <= 64 and ' ' not in candidate:
+            sender_username = candidate
     if is_group:
         if sender_username and sender_username != chat_username:
-            return display_name_fn(sender_username, names)
-        if sender_from_content:
-            return display_name_fn(sender_from_content, names)
-        return ''
-    if sender_username == chat_username:
-        return chat_display_name
-    if sender_username:
-        return display_name_fn(sender_username, names)
-    return ''
+            label = display_name_fn(sender_username, names)
+        elif sender_from_content:
+            label = display_name_fn(sender_from_content, names)
+        else:
+            label = ''
+    else:
+        if sender_username == chat_username:
+            label = chat_display_name
+        elif sender_username:
+            label = display_name_fn(sender_username, names)
+        else:
+            label = ''
+    contact_display = display_name_fn(sender_username, names) if sender_username else ''
+    return {
+        'sender': label,
+        'sender_username': sender_username or '',
+        'sender_contact_display': contact_display,
+    }
 
 
 # ---- SQL 查询 ----
@@ -527,7 +560,7 @@ def _message_table_id(ctx):
     return f"{db_key}:{ctx['table_name']}"
 
 
-def _build_message_record(row, ctx, names, id_to_username, display_name_fn, resolve_media=False, db_dir=None):
+def _build_message_record(row, ctx, names, id_to_username, display_name_fn, resolve_media=False, db_dir=None, group_nickname_fn=None):
     local_id, local_type, create_time, real_sender_id, content, ct = row
     content = decompress_content(content, ct)
     if content is None:
@@ -536,9 +569,15 @@ def _build_message_record(row, ctx, names, id_to_username, display_name_fn, reso
         local_id, local_type, content, ctx['is_group'], ctx['username'], ctx['display_name'], names, display_name_fn,
         db_dir=db_dir, create_time_ts=create_time, resolve_media=resolve_media,
     )
-    sender_label = _resolve_sender_label(
+    identity = _resolve_sender_identity(
         real_sender_id, sender, ctx['is_group'], ctx['username'], ctx['display_name'], names, id_to_username, display_name_fn,
     )
+    group_nickname = ''
+    if ctx['is_group'] and group_nickname_fn and identity['sender_username']:
+        try:
+            group_nickname = group_nickname_fn(ctx['username'], identity['sender_username']) or ''
+        except Exception:
+            group_nickname = ''
     base_type, subtype = _split_msg_type(local_type)
     return {
         'message_id': f"{_message_table_id(ctx)}:{local_id}",
@@ -546,11 +585,15 @@ def _build_message_record(row, ctx, names, id_to_username, display_name_fn, reso
         'username': ctx['username'],
         'is_group': ctx['is_group'],
         'timestamp': create_time,
-        'sender': sender_label,
+        'sender': identity['sender'],
+        'sender_username': identity['sender_username'],
+        'sender_contact_display': identity['sender_contact_display'],
+        'sender_group_nickname': group_nickname,
         'type': base_type,
         'subtype': subtype,
         'msg_type': format_msg_type(local_type),
         'text': text,
+        'url': _extract_app_message_url(content, ctx['is_group']),
     }
 
 
@@ -571,9 +614,10 @@ def _build_search_entry(row, ctx, names, id_to_username, display_name_fn, resolv
     )
     if text and len(text) > 300:
         text = text[:300] + '...'
-    sender_label = _resolve_sender_label(
+    identity = _resolve_sender_identity(
         real_sender_id, sender, ctx['is_group'], ctx['username'], ctx['display_name'], names, id_to_username, display_name_fn
     )
+    sender_label = identity['sender']
     time_str = datetime.fromtimestamp(create_time).strftime('%Y-%m-%d %H:%M')
     entry = f"[{time_str}] [{ctx['display_name']}]"
     if sender_label:
@@ -601,7 +645,8 @@ def _iter_history_table(table_ctx, failures, start_ts, end_ts, msg_type_filter):
 
 
 def iter_chat_history(ctx, names, display_name_fn, failures, *, start_ts=None, end_ts=None,
-                      msg_type_filter=None, resolve_media=False, db_dir=None, structured=True):
+                      msg_type_filter=None, resolve_media=False, db_dir=None, structured=True,
+                      group_nickname_fn=None):
     """按时间从新到旧归并消息表，逐条生成消息。"""
     with ExitStack() as stack:
         streams = [
@@ -613,6 +658,7 @@ def iter_chat_history(ctx, names, display_name_fn, failures, *, start_ts=None, e
             try:
                 record = _build_message_record(
                     row, table_ctx, names, id_to_username, display_name_fn, resolve_media=resolve_media, db_dir=db_dir,
+                    group_nickname_fn=group_nickname_fn,
                 )
                 yield record if structured else _format_history_line(record)
             except Exception as error:
@@ -620,11 +666,13 @@ def iter_chat_history(ctx, names, display_name_fn, failures, *, start_ts=None, e
 
 
 def collect_chat_history(ctx, names, display_name_fn, start_ts=None, end_ts=None, limit=20, offset=0,
-                         msg_type_filter=None, resolve_media=False, db_dir=None, *, structured=False):
+                         msg_type_filter=None, resolve_media=False, db_dir=None, *, structured=False,
+                         group_nickname_fn=None):
     failures = []
     with closing(iter_chat_history(
         ctx, names, display_name_fn, failures, start_ts=start_ts, end_ts=end_ts,
         msg_type_filter=msg_type_filter, resolve_media=resolve_media, db_dir=db_dir, structured=structured,
+        group_nickname_fn=group_nickname_fn,
     )) as records:
         page = list(islice(records, offset, offset + limit))
     page.reverse()
@@ -728,7 +776,7 @@ def _load_message_table_contexts(conn, db_path, db_key, names, id_to_username=No
     return contexts
 
 
-def collect_new_messages(msg_db_keys, cache, names, display_name_fn, previous, legacy_timestamps=None):
+def collect_new_messages(msg_db_keys, cache, names, display_name_fn, previous, legacy_timestamps=None, group_nickname_fn=None):
     """记录每个分库消息表的 local_id，按实际消息读取新增行。"""
     checkpoints = dict(previous or {})
     baseline = previous is None and legacy_timestamps is None
@@ -767,7 +815,10 @@ def collect_new_messages(msg_db_keys, cache, names, display_name_fn, previous, l
                     params,
                 )
                 for row in rows:
-                    messages.append(_build_message_record(row, ctx, names, id_to_username, display_name_fn))
+                    messages.append(_build_message_record(
+                        row, ctx, names, id_to_username, display_name_fn,
+                        group_nickname_fn=group_nickname_fn,
+                    ))
 
     if not opened_any:
         raise sqlite3.DatabaseError("没有可读取的消息数据库")

@@ -78,7 +78,15 @@ wechat-cli history "张三" --limit 20 --structured
 wechat-cli export "张三" --limit 1000 --format jsonl --output chat.jsonl
 ```
 
-`history --structured` 每条消息返回一个对象，包含来源数据库内的 `message_id`、Unix 秒级 `timestamp`、发送者 `sender`、数字类型 `type` 和 `subtype`、类型名称 `msg_type` 及正文 `text`。
+`history --structured` 每条消息返回一个对象，包含来源数据库内的 `message_id`、Unix 秒级 `timestamp`、发送者 `sender`、数字类型 `type` 和 `subtype`、类型名称 `msg_type` 及正文 `text`。还会附带稳定身份字段：`sender_username`（wxid/微信号）、`sender_contact_display`（通讯录显示名）和 `sender_group_nickname`（群昵称，解析不到时为空字符串）。链接类消息额外带 `url`（公众号文章、网页链接），解析不到时为空字符串。
+
+`history` 和 `search` 的 JSON 输出带 `meta`，用于判断结果是否完整：
+
+- `status`：`ok`、`partial`（有查询失败）或 `possibly_stale`（有消息分片缺少密钥）。
+- `missing_shards`：缺少密钥的消息分片。
+- `warnings`：需要展示给用户的提示。
+- `generated_at`：查询时间（Unix 秒）。
+- `latest_timestamp` / `latest_time`：本次结果或该聊天在本地数据中的最新消息时间。
 
 给 `history` 加上 `--media` 可尝试解析本地媒体路径。
 
