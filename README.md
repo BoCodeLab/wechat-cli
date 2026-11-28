@@ -58,6 +58,8 @@ Replace the example names with a contact or group from your own session list. Yo
 | List group members | `wechat-cli members "Project Team"` |
 | View activity and sender statistics | `wechat-cli stats "Project Team" --format text` |
 | Search favorites | `wechat-cli favorites --type article --query "guide"` |
+| List local image attachments | `wechat-cli attachments "Project Team" --limit 10 --structured` |
+| Decrypt one image attachment | `wechat-cli extract "<attachment_id>" --output image.jpg` |
 | Export a conversation | `wechat-cli export "Alice" --format markdown --output alice.md` |
 | Read newly arrived messages | `wechat-cli new-messages --cursor daily-report` |
 
@@ -91,6 +93,22 @@ wechat-cli export "Alice" --limit 1000 --format jsonl --output alice.jsonl
 Add `--media` to `history` to try resolving local media paths.
 
 JSONL writes the same fields as UTF-8, one message per line, newest first. Use `--output` to write a file or omit it to stream to stdout. Markdown and plain text (`txt`) are also available for exports intended for readers.
+
+## Image attachments
+
+`attachments` lists image messages that have a local file. Each entry carries `attachment_id`, `kind` (`image`, `image_hd`, or `thumbnail`), `timestamp`, `time`, sender identity fields, and `msg_id`. Pass the id to `extract` to decrypt one file:
+
+```bash
+wechat-cli attachments "Project Team" --limit 10 --structured
+wechat-cli extract "wxid_xxx|message/message_0.db:Msg_xxx:42|image" --output image.jpg
+```
+
+`extract` writes the decrypted bytes and reports the detected format (`jpg`, `png`, `gif`, `webp`, `heic`, or `wxgf`), size, and decoder (`plain`, `legacy_xor`, `v1_aes`, `v2_aes`).
+
+- Plain files and legacy single-byte XOR need no key.
+- V1 (`07 08 56 31 08 07`) uses a fixed AES-128-ECB key.
+- V2 (`07 08 56 32 08 07`) combines an AES segment and a single-byte XOR segment. The account key is derived once from local data and cached in `~/.wechat-cli/image_key.json`; it is never printed or uploaded. If a machine cannot derive it, `extract` fails with `V2 暂不支持` and the reason.
+- `wxgf` is WeChat's HEVC container; it is written as-is and not converted.
 
 ## Incremental reads and agents
 

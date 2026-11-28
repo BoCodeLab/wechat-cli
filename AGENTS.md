@@ -30,6 +30,8 @@ wechat-cli favorites --query "关键词"      # 收藏
 wechat-cli unread                          # 未读会话
 wechat-cli new-messages --cursor agent     # 使用独立游标读取新增消息
 wechat-cli export "名字" --format jsonl    # 逐条输出消息对象
+wechat-cli attachments "群名" --limit 20   # 本地图片附件
+wechat-cli extract <attachment_id> --output image.jpg  # 解密单张图片
 ```
 
 默认输出 JSON，直接解析；需要人类可读时加 `--format text`。

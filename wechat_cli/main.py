@@ -56,6 +56,7 @@ from .commands.export import export
 from .commands.stats import stats
 from .commands.unread import unread
 from .commands.favorites import favorites
+from .commands.attachments import attachments, extract
 
 cli.add_command(init)
 cli.add_command(doctor)
@@ -69,6 +70,8 @@ cli.add_command(export)
 cli.add_command(stats)
 cli.add_command(unread)
 cli.add_command(favorites)
+cli.add_command(attachments)
+cli.add_command(extract)
 
 
 if __name__ == "__main__":

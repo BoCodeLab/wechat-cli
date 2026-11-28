@@ -58,6 +58,8 @@ wechat-cli init --db-dir "你的数据目录/db_storage"
 | 查看群成员 | `wechat-cli members "项目群"` |
 | 查看活跃时段和发言统计 | `wechat-cli stats "项目群" --format text` |
 | 搜索收藏 | `wechat-cli favorites --type article --query "使用指南"` |
+| 列出本地图片附件 | `wechat-cli attachments "项目群" --limit 10 --structured` |
+| 解密单个图片附件 | `wechat-cli extract "<attachment_id>" --output image.jpg` |
 | 导出聊天记录 | `wechat-cli export "张三" --format markdown --output chat.md` |
 | 逐条读取新消息 | `wechat-cli new-messages --cursor daily-report` |
 
@@ -91,6 +93,22 @@ wechat-cli export "张三" --limit 1000 --format jsonl --output chat.jsonl
 给 `history` 加上 `--media` 可尝试解析本地媒体路径。
 
 JSONL 使用相同字段和 UTF-8 编码，每行一条，最新消息在前。指定 `--output` 可写入文件，省略则写入标准输出。面向阅读的导出也支持 Markdown 和纯文本（`txt`）。
+
+## 图片附件
+
+`attachments` 列出本地已有文件的图片消息，每条带 `attachment_id`、`kind`（`image`、`image_hd` 或 `thumbnail`）、`timestamp`、`time`、发送者身份字段和 `msg_id`。把 id 交给 `extract` 即可解密单个文件：
+
+```bash
+wechat-cli attachments "项目群" --limit 10 --structured
+wechat-cli extract "wxid_xxx|message/message_0.db:Msg_xxx:42|image" --output image.jpg
+```
+
+`extract` 写出解密后的字节，并报告识别到的格式（`jpg`、`png`、`gif`、`webp`、`heic` 或 `wxgf`）、大小和解码器（`plain`、`legacy_xor`、`v1_aes`、`v2_aes`）。
+
+- 明文图片和 legacy 单字节 XOR 不需要密钥。
+- V1（`07 08 56 31 08 07`）使用固定 AES-128-ECB 密钥。
+- V2（`07 08 56 32 08 07`）由 AES 段和单字节 XOR 段组成。账号密钥首次从本机数据派生，缓存在 `~/.wechat-cli/image_key.json`，不会打印或上传。机器无法派生时会明确报 `V2 暂不支持` 并说明原因。
+- `wxgf` 是微信的 HEVC 容器，按原样写出，不做转码。
 
 ## 增量读取与 Agent 集成
 
